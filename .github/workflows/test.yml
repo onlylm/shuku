@@ -27,6 +27,8 @@ jobs:
         run: |
           bash -n deploy.sh scripts/install_docker.sh scripts/start.sh
           pytest -q --ignore=tests/test_organizer.py
+      - name: Test category dropdown interactions
+        run: node --test tests/category_picker_dom.mjs
 
   linux-container:
     runs-on: ubuntu-latest

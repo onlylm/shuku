@@ -45,6 +45,7 @@ from app.services.resources import create_resource, update_resource
 from app.services.publication import publication_issues
 from app.services.category_governance import catalog_audit, merge_categories, merge_preview, save_mapping, move_category_books
 from app.services.catalog_layout import fixed_root_ids, layout
+from app.services.category_forms import category_picker, category_ids_from_form
 from app.services.site_settings import read_value
 from app.services.stats import dashboard_stats
 from app.services.text import slugify
@@ -518,11 +519,10 @@ async def cloud_upload_retry_problem(request: Request, db: Session = Depends(get
 def resource_new(request: Request, db: Session = Depends(get_db)):
     if not current_admin(request, db):
         return _redirect_login(request)
-    categories = list(db.scalars(select(Category).order_by(Category.sort_order, Category.name)))
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/resource_form.html",
-        context=_admin_context(request, db, resource=None, categories=categories, active="resources", error=None),
+        context=_admin_context(request, db, resource=None, picker=category_picker(db), active="resources", error=None),
     )
 
 
@@ -534,12 +534,12 @@ async def resource_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     verify_csrf(request, str(form.get("csrf_token") or ""))
     data = dict(form)
-    data["category_ids"] = form.getlist("category_ids")
     data["metadata_locked"] = form.get("metadata_locked") == "1"
     if form.get("submit_action") == "publish":
         data["publish_status"] = "published"
     data["cover_image"] = await _handle_cover_upload(form)
     try:
+        data["category_ids"] = category_ids_from_form(db, form)
         resource = create_resource(db, data)
         share_url = str(form.get("share_url") or "").strip()
         if share_url:
@@ -556,11 +556,10 @@ async def resource_create(request: Request, db: Session = Depends(get_db)):
         db.commit()
     except ValueError as exc:
         db.rollback()
-        categories = list(db.scalars(select(Category).order_by(Category.sort_order, Category.name)))
         return _templates(request).TemplateResponse(
             request=request,
             name="admin/resource_form.html",
-            context=_admin_context(request, db, resource=None, categories=categories, active="resources", error=str(exc), values=data),
+            context=_admin_context(request, db, resource=None, picker=category_picker(db, values=data), active="resources", error=str(exc), values=data),
             status_code=400,
         )
     if data.get("publish_status") == "published" and resource.publish_status != "published":
@@ -588,7 +587,6 @@ def resource_edit(resource_id: int, request: Request, db: Session = Depends(get_
     if not resource:
         _flash(request, "资源不存在", "danger")
         return RedirectResponse(request.url_for("admin_resources"), status_code=303)
-    categories = list(db.scalars(select(Category).order_by(Category.sort_order, Category.name)))
     providers = list(db.scalars(select(Provider).where(Provider.status != "disabled").order_by(Provider.sort_order)))
     return _templates(request).TemplateResponse(
         request=request,
@@ -597,7 +595,7 @@ def resource_edit(resource_id: int, request: Request, db: Session = Depends(get_
             request,
             db,
             resource=resource,
-            categories=categories,
+            picker=category_picker(db, resource),
             providers=providers,
             active="resources",
             error=None,
@@ -618,12 +616,12 @@ async def resource_update(resource_id: int, request: Request, db: Session = Depe
     form = await request.form()
     verify_csrf(request, str(form.get("csrf_token") or ""))
     data = dict(form)
-    data["category_ids"] = form.getlist("category_ids")
     data["metadata_locked"] = form.get("metadata_locked") == "1"
     if form.get("submit_action") == "publish":
         data["publish_status"] = "published"
     data["cover_image"] = await _handle_cover_upload(form, resource.cover_image)
     try:
+        data["category_ids"] = category_ids_from_form(db, form, resource)
         update_resource(db, resource, data)
         _audit(db, admin.id, "update", "resource", resource.id, {"title": resource.title})
         db.commit()

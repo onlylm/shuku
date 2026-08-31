@@ -1,0 +1,24 @@
+<div class="field full" data-category-picker>
+  <span>网站分类</span>
+  <input type="hidden" name="category_picker" value="1">
+  <div class="field-grid">
+    <label class="field" for="resource-main-category"><span>一级分类</span>
+      <select class="select" id="resource-main-category" name="main_category_id" data-category-main>
+        {% if picker.keep %}<option value="__keep__" selected>保留现有分类（待确认）</option>{% endif %}
+        <option value="" {{ 'selected' if not picker.main }}>请选择一级分类</option>
+        {% for item in picker.roots %}<option value="{{ item.id }}" {{ 'selected' if item.id|string == picker.main }}>{{ item.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field" for="resource-subcategory"><span>二级分类（可选）</span>
+      <select class="select" id="resource-subcategory" name="subcategory_id" data-category-sub {{ 'disabled' if not picker.main or picker.keep }}>
+        <option value="">不选二级分类</option>
+        {% for item in picker.children if item.parent_id|string == picker.main %}<option value="{{ item.id }}" {{ 'selected' if item.id|string == picker.sub }}>{{ item.name }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <small class="form-hint" data-category-hint aria-live="polite">选择一级分类后，可再选择对应的二级分类。</small>
+  {% if picker.keep %}<small class="form-hint">现有分类存在多个分支或不可用项，暂时原样保留。选择新分类并保存后才会替换。</small>{% endif %}
+  <noscript><small class="form-hint">请启用浏览器 JavaScript 以联动选择分类；未修改的现有分类仍可保存。</small></noscript>
+  <script type="application/json" data-category-options>{{ picker.children|tojson }}</script>
+</div>
+<script src="{{ url_for('static', path='/js/category-picker.js') }}" defer></script>
