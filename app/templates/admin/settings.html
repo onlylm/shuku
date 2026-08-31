@@ -10,6 +10,8 @@
 <h2>网站资料</h2><p class="muted">保存后前台、登录页和后台同步生效，不需要重启服务器。</p>
 <label class="field"><span>网站名称</span><input class="input" name="name" maxlength="60" value="{{ profile.name }}" required></label>
 <label class="field"><span>站点介绍</span><textarea class="input" name="description" rows="3" maxlength="300">{{ profile.description }}</textarea></label>
+<label class="field"><span>首页小标语</span><input class="input" name="hero_eyebrow" maxlength="60" value="{{ profile.hero_eyebrow }}"><small class="form-hint">显示在首页大标题上方；留空不显示。</small></label>
+<label class="field"><span>首页大标题</span><textarea class="input" name="hero_title" rows="4" maxlength="180">{{ profile.hero_title }}</textarea><small class="form-hint">回车换行，最多4行、180字；留空不显示。站点介绍只用于页面描述，不再作为首页长段落展示。</small></label>
 <div class="settings-grid">{% for key, label in [('logo','网站 Logo'),('favicon','浏览器小图标')] %}<div class="settings-upload"><label class="field"><span>{{ label }}</span>{% if profile[key] %}<img src="{{ profile[key] }}" class="settings-logo-preview" alt="当前{{ label }}">{% endif %}<input type="file" name="{{ key }}" accept="image/png,image/jpeg,image/webp"></label><p class="form-hint">PNG、JPEG、WebP，最大2MB。</p><label><input type="checkbox" name="remove_{{ key }}" value="yes"> 恢复默认图标</label></div>{% endfor %}</div>
 <label class="field"><span>联系邮箱（可选）</span><input class="input" type="email" name="contact_email" maxlength="254" value="{{ profile.contact_email }}"></label>
 <label class="field"><span>页脚说明</span><textarea class="input" name="footer" rows="3" maxlength="1000">{{ profile.footer }}</textarea></label>

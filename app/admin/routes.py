@@ -43,7 +43,9 @@ from app.services.link_monitor import due_link_count
 from app.services.pagination import pagination_context
 from app.services.resources import create_resource, update_resource
 from app.services.publication import publication_issues
-from app.services.category_governance import catalog_audit, merge_categories, merge_preview, save_mapping
+from app.services.category_governance import catalog_audit, merge_categories, merge_preview, save_mapping, move_category_books
+from app.services.catalog_layout import fixed_root_ids, layout
+from app.services.site_settings import read_value
 from app.services.stats import dashboard_stats
 from app.services.text import slugify
 from app.services.cloud_uploads import (
@@ -1187,7 +1189,7 @@ def categories_page(request: Request, db: Session = Depends(get_db)):
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/categories.html",
-        context=_admin_context(request, db, categories=categories, active="categories"),
+        context=_admin_context(request, db, categories=categories, active="categories", fixed_roots=fixed_root_ids(db), migration_report=read_value(db, "catalog_upgrade_v1")),
     )
 
 
@@ -1270,6 +1272,9 @@ async def category_create(request: Request, db: Session = Depends(get_db)):
         else:
             parent_id = _form_int(form.get("parent_id"), 0) or None
             parent = db.get(Category, parent_id) if parent_id else None
+            if layout(db) and parent_id not in fixed_root_ids(db):
+                _flash(request, "顶部导航已固定，请选择一个导航大类作为上级，新增二级分类", "danger")
+                return RedirectResponse(request.url_for("admin_categories"), status_code=303)
             if parent_id and (not parent or parent.parent_id is not None or db.get(CategoryRedirect, parent.id)):
                 _flash(request, "上级必须是有效一级分类；网站只维护两级分类", "danger")
                 return RedirectResponse(request.url_for("admin_categories"), status_code=303)
@@ -1311,6 +1316,7 @@ def category_edit(category_id: int, request: Request, db: Session = Depends(get_
             db,
             category=category,
             categories=categories,
+            fixed_roots=fixed_root_ids(db),
             active="categories",
             error=None,
         ),
@@ -1337,6 +1343,10 @@ async def category_update(category_id: int, request: Request, db: Session = Depe
         _flash(request, "分类网址别名已存在", "danger")
     elif db.get(CategoryRedirect, category.id):
         _flash(request, "已合并分类保留作旧网址跳转，请编辑目标分类", "danger")
+    elif category.id in fixed_root_ids(db) and parent_id is not None:
+        _flash(request, "固定导航大类不能移为二级分类", "danger")
+    elif layout(db) and parent_id != category.parent_id and parent_id not in fixed_root_ids(db):
+        _flash(request, "请选择一个固定导航大类作为新上级", "danger")
     elif db.scalar(select(Category.id).where(Category.name == name, Category.parent_id == parent_id, Category.id != category.id)):
         _flash(request, "同一上级下已有同名分类，请先合并", "danger")
     elif parent_id and (not db.get(Category, parent_id) or db.get(Category, parent_id).parent_id is not None or category.children or db.get(CategoryRedirect, parent_id)):
@@ -1344,13 +1354,14 @@ async def category_update(category_id: int, request: Request, db: Session = Depe
     elif not _valid_category_parent(db, category, parent_id):
         _flash(request, "不能把分类移动到自己的下级分类中", "danger")
     else:
+        moved_books = move_category_books(db, category, parent_id)
         category.name = name
         category.slug = slug
         category.description = str(form.get("description") or "").strip() or None
         category.parent_id = parent_id
         category.sort_order = _form_int(form.get("sort_order"), 0)
         category.is_visible = form.get("is_visible") == "1"
-        _audit(db, admin.id, "update", "category", category.id, {"name": category.name})
+        _audit(db, admin.id, "update", "category", category.id, {"name": category.name, "moved_books": moved_books})
         db.commit()
         _flash(request, "分类设置已保存")
     return RedirectResponse(request.url_for("admin_category_edit", category_id=category_id), status_code=303)
@@ -1370,6 +1381,8 @@ async def category_delete(category_id: int, request: Request, db: Session = Depe
     )
     if not category:
         _flash(request, "分类不存在", "danger")
+    elif category.id in fixed_root_ids(db):
+        _flash(request, "固定导航大类不能删除；可编辑名称和下级分类", "danger")
     elif category.children:
         _flash(request, "该分类还有下级分类，请先移动或删除下级分类", "danger")
     elif category.resources:

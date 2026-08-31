@@ -66,6 +66,31 @@ def test_profile_invalid_not_applied(admin_client, db_session):
     assert db_session.get(SiteSetting, "profile") is None
 
 
+def test_home_hero_editable_newlines_escaped_and_paragraph_removed(admin_client, db_session):
+    old = BeautifulSoup(admin_client.get("/").text, "html.parser")
+    assert "找到值得读的那一本" in old.select_one(".hero h1").get_text()
+    assert old.select_one(".hero-lead") is None and old.select_one(".hero-stats") is not None
+    submit(admin_client, "site", name="合成书库", hero_eyebrow="每天读一点", hero_title="第一行\r\n<script>不能执行</script>")
+    html = admin_client.get("/").text
+    page = BeautifulSoup(html, "html.parser")
+    assert page.select_one(".hero h1").get_text() == "第一行\n<script>不能执行</script>"
+    assert "<script>不能执行</script>" not in html
+    assert page.select_one(".hero .eyebrow").get_text() == "每天读一点"
+    submit(admin_client, "site", name="只改站名")
+    assert "第一行" in admin_client.get("/").text
+    submit(admin_client, "site", name="合成书库", hero_eyebrow="", hero_title="")
+    page = BeautifulSoup(admin_client.get("/").text, "html.parser")
+    assert page.select_one(".hero h1") is None and page.select_one(".hero .eyebrow") is None
+    assert page.select_one(".hero-stats") is not None
+
+
+@pytest.mark.parametrize("value", ["字" * 181, "一\n二\n三\n四\n五", "不可\x00用"])
+def test_hero_invalid_content_is_atomic(admin_client, db_session, value):
+    response = submit(admin_client, "site", name="不能保存", hero_title=value)
+    assert "首页标语" in response.text
+    assert db_session.get(SiteSetting, "profile") is None
+
+
 def test_logo_upload_reencoded_and_served(admin_client, monkeypatch, tmp_path, db_session):
     monkeypatch.setattr(get_settings(), "local_storage_root", tmp_path)
     source = io.BytesIO()

@@ -18,6 +18,7 @@ from app.services.organizer_contract import CommitChoices, OrganizerPackage
 from app.services.resources import create_resource
 from app.services.text import normalize_title
 from app.services.category_governance import resolve_categories
+from app.services.catalog_layout import materialize, plan_data, same_plan
 from app.services.publication import apply_publication_gate, publication_issues
 from app.services.site_settings import cover_hosts
 
@@ -87,8 +88,10 @@ def make_preview(db: Session, package: OrganizerPackage, token_id: int):
         if book.rights_review_status != "confirmed" or not book.copyright_status or not (book.source_reference or "").strip():
             warnings.append("版权类别及来源未确认，只能保存草稿")
         try:
-            path = resolve_categories(db, book.main_category, book.subcategory)
-            mapped_categories = [{"id": c.id, "name": c.name} for c in path]
+            path = resolve_categories(db, book.main_category, book.subcategory, allow_planned=True)
+            mapped_categories = plan_data(path)
+            if path and path[-1].id is None:
+                warnings.append(f"提交后将在“{path[0].name}”下创建二级分类“{path[-1].name}”，顶部导航不变")
         except ValueError as exc:
             warnings.append(str(exc))
             mapped_categories = []
@@ -172,15 +175,15 @@ def commit_batch(db: Session, batch: OrganizerBatch, choices: CommitChoices, adm
                     if book["cover_url"] and (choice.overwrite or not resource.cover_image):
                         resource.cover_image = book["cover_url"]
                     try:
-                        current_path = resolve_categories(db, book.get("main_category"), book.get("subcategory"))
+                        current_path = resolve_categories(db, book.get("main_category"), book.get("subcategory"), allow_planned=True)
                     except ValueError as exc:
                         current_path = []
                         classification_error = str(exc)
                         warnings.append(classification_error)
-                    if [c.id for c in current_path] != [c["id"] for c in row["mapped_categories"]]:
+                    if not same_plan(current_path, row["mapped_categories"]):
                         raise ValueError("预检后分类映射已改变，请重新预检")
                     if current_path:
-                        resource.categories = current_path
+                        resource.categories = materialize(db, current_path)
                 resource.source_category_main = book.get("main_category") or None
                 resource.source_category_sub = book.get("subcategory") or None
                 resource.formats = " · ".join(sorted(set((resource.formats or "").replace("·", " ").split()) | {"EPUB"}))

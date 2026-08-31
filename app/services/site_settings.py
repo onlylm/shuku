@@ -19,6 +19,8 @@ from scripts.server_config import hostname
 PROFILE_KEY = "profile"
 DEFAULT_DESCRIPTION = "收录公版、开放许可与已获授权的图书和教程，提供清晰的网盘获取入口。"
 DEFAULT_FOOTER = "整理公版、开放许可或已取得授权的图书与教程。本站仅提供资源索引，不直接存储第三方分享文件。"
+DEFAULT_HERO_EYEBROW = "安静、清晰、专注阅读"
+DEFAULT_HERO_TITLE = "找到值得读的那一本，\n从一次清晰的检索开始。"
 
 
 def read_value(db: Session, key: str) -> dict:
@@ -39,6 +41,7 @@ def profile(db: Session, config=None) -> dict:
     return {
         "name": config.app_name, "description": DEFAULT_DESCRIPTION,
         "footer": DEFAULT_FOOTER, "contact_email": "", "logo": "", "favicon": "",
+        "hero_eyebrow": DEFAULT_HERO_EYEBROW, "hero_title": DEFAULT_HERO_TITLE,
         **read_value(db, PROFILE_KEY),
     }
 
@@ -54,6 +57,13 @@ def clean_profile(data: dict) -> dict:
         raise ValueError("请填写网站名称")
     if result["contact_email"] and not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", result["contact_email"]):
         raise ValueError("联系邮箱格式不正确")
+    # 老页面提交未包含新字段时保持原值；显式留空则隐藏对应文案。
+    for key, limit in {"hero_eyebrow": 60, "hero_title": 180}.items():
+        if key in data:
+            value = str(data[key]).replace("\r\n", "\n").replace("\r", "\n").strip()
+            if len(value) > limit or "\x00" in value or value.count("\n") > (3 if key == "hero_title" else 0):
+                raise ValueError("首页标语最长60字；标题最长180字、最多4行")
+            result[key] = value
     return result
 
 
@@ -102,5 +112,6 @@ def bind_profile(request: Request, db: Session = Depends(get_db)):
 def template_profile(request: Request) -> dict:
     config = request.app.state.config
     data = getattr(request.state, "site_profile", {"name": config.app_name, "description": DEFAULT_DESCRIPTION,
-        "footer": DEFAULT_FOOTER, "contact_email": "", "logo": "", "favicon": ""})
+        "footer": DEFAULT_FOOTER, "contact_email": "", "logo": "", "favicon": "",
+        "hero_eyebrow": DEFAULT_HERO_EYEBROW, "hero_title": DEFAULT_HERO_TITLE})
     return {"app_name": data["name"], "site_profile": data, "server_uploads_available": config.app_env != "production"}

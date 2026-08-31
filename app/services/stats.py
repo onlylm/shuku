@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Category, ChannelShareLink, LinkClick, Resource, SearchQuery, resource_categories
 from app.services.resources import visible_resource_query
+from app.services.catalog_layout import navigation_categories
 
 # 站点运营所在时区（东八区），用于计算“今日更新”。
 SITE_TIMEZONE = timezone(timedelta(hours=8))
@@ -63,20 +64,15 @@ def site_stats(db: Session, include_categories: bool = True) -> SiteStats:
 
     category_counts: list[CategoryStat] = []
     if include_categories:
-        categories = list(
-            db.scalars(
-                select(Category)
-                .where(Category.is_visible.is_(True), Category.parent_id.is_(None))
-                .order_by(Category.sort_order, Category.name)
-            )
-        )
+        categories = navigation_categories(db)
         for category in categories:
             count = int(
                 db.scalar(
-                    select(func.count())
+                    select(func.count(func.distinct(resource_categories.c.resource_id)))
                     .select_from(resource_categories)
                     .where(
-                        resource_categories.c.category_id == category.id,
+                        resource_categories.c.category_id.in_(select(Category.id).where(
+                            (Category.id == category.id) | ((Category.parent_id == category.id) & Category.is_visible.is_(True)))),
                         resource_categories.c.resource_id.in_(visible_ids),
                     )
                 )

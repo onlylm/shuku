@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import Category, CategoryRedirect, ChannelShareLink, FriendLink, Provider, Resource, ResourceChannel
 from app.services.category_governance import canonical_category
+from app.services.catalog_layout import navigation_categories
 from app.services.links import record_click, visible_redirect_link
 from app.services.pagination import pagination_context
 from app.services.resources import get_visible_links, resource_public_url, visible_resource_query
@@ -26,13 +27,7 @@ def _templates(request: Request):
 
 
 def _nav_categories(db: Session) -> list[Category]:
-    return list(
-        db.scalars(
-            select(Category)
-            .where(Category.is_visible.is_(True), Category.parent_id.is_(None))
-            .order_by(Category.sort_order, Category.id)
-        )
-    )
+    return navigation_categories(db)
 
 
 def _friend_links(db: Session) -> list[FriendLink]:
@@ -184,7 +179,9 @@ def category_detail(
     statement = (
         visible_resource_query()
         .join(Resource.categories)
-        .where(Category.id == category.id)
+        .where(Category.id.in_(select(Category.id).where(
+            (Category.id == category.id) | ((Category.parent_id == category.id) & Category.is_visible.is_(True))
+        )))
         .order_by(Resource.published_at.desc())
     )
     per_page = 24
@@ -194,6 +191,10 @@ def category_detail(
     pagination = pagination_context(request.url.path, page, per_page, total)
     canonical = str(request.url_for("category_detail", slug=slug)) + (f"?page={page}" if page > 1 else "")
     active_category = category.parent if category.parent else category
+    nav_children = list(db.scalars(select(Category).where(
+        Category.parent_id == active_category.id, Category.is_visible.is_(True),
+        Category.resources.any(Resource.publish_status == "published"),
+    ).order_by(Category.sort_order, Category.id)))
     return _templates(request).TemplateResponse(
         request=request,
         name="web/category.html",
@@ -202,6 +203,7 @@ def category_detail(
             active_nav="category",
             active_category=active_category,
             category=category,
+            nav_children=nav_children,
             cards=cards,
             pagination=pagination,
             canonical=canonical,

@@ -36,13 +36,30 @@ def category_path(db, target_id):
     return [parent, target]
 
 
-def resolve_categories(db, main, sub=None):
+def resolve_categories(db, main, sub=None, *, allow_planned=False):
     main, sub = str(main or "").strip(), str(sub or "").strip()
     if not main:
         raise ValueError("缺少网站分类，请在分类管理中选择或建立映射")
     mapping = db.scalar(select(CategoryMapping).where(CategoryMapping.source_main == main, CategoryMapping.source_sub == sub))
     if mapping:
         return category_path(db, mapping.target_id)
+    from app.services.catalog_layout import auto_path, fixed_root_ids, layout
+    policy = layout(db)
+    if policy:
+        # 当前导航名称被管理员改名时仍可按其实际名称精确匹配。
+        current = list(db.scalars(select(Category).where(Category.name == main,
+            Category.id.in_(fixed_root_ids(db)), Category.parent_id.is_(None), Category.is_visible.is_(True))))
+        if len(current) == 1:
+            if not sub:
+                return [current[0]]
+            children = list(db.scalars(select(Category).where(Category.name == sub, Category.parent_id == current[0].id, Category.is_visible.is_(True))))
+            if len(children) == 1:
+                return category_path(db, children[0].id)
+            # 以固定目录代码对应的原名继续规划，允许导航改名而不破坏自动分流。
+            from app.catalog_v1 import GROUPS
+            code = next(k for k, cid in policy["roots"].items() if cid == current[0].id)
+            main = next(g[1] for g in GROUPS if g[0] == code)
+        return auto_path(db, main, sub, allow_planned=allow_planned)
     roots = list(db.scalars(select(Category).where(Category.name == main, Category.parent_id.is_(None), Category.is_visible.is_(True))))
     if len(roots) != 1:
         raise ValueError(f"分类“{main}”尚未映射或重名，请在分类管理中确认")
@@ -70,6 +87,9 @@ def save_mapping(db, main, sub, target_id):
 
 
 def merge_preview(db, source_id, target_id):
+    from app.services.catalog_layout import fixed_root_ids
+    if source_id in fixed_root_ids(db):
+        raise ValueError("固定导航大类不能合并；请合并其下的二级分类")
     source = db.get(Category, source_id)
     if not source or db.get(CategoryRedirect, source_id):
         raise ValueError("原分类不存在或已合并")
@@ -153,3 +173,20 @@ def catalog_audit(db):
             if resolution_errors[key]:
                 pending.append({"id": r.id, "title": r.title, "main": key[0], "sub": key[1], "reason": resolution_errors[key]})
     return {"duplicate_categories": duplicates, "pending_categories": pending, "publication_issues": issues}
+
+
+def move_category_books(db, category, new_parent_id):
+    """人工移动分类时同步修正图书的父类关联，保留其他明确关联的分支。"""
+    if category.parent_id == new_parent_id:
+        return 0
+    old_parent = category.parent_id
+    books = list(db.scalars(select(Resource).where(Resource.categories.any(Category.id == category.id))
+        .options(selectinload(Resource.categories)).with_for_update()))
+    for book in books:
+        chosen = {c.id: c for c in book.categories}
+        if old_parent and not any(c.id != category.id and c.parent_id == old_parent for c in chosen.values()):
+            chosen.pop(old_parent, None)
+        if new_parent_id:
+            chosen[new_parent_id] = db.get(Category, new_parent_id)
+        book.categories = list(chosen.values())
+    return len(books)

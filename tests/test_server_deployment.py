@@ -123,7 +123,7 @@ def test_production_initializer_fresh_database(db_session):
         initialize(db_session, "admin", "ChangeMe123!")
     assert initialize(db_session, "owner", "random-test-password-123") is True
     assert verify_password("random-test-password-123", db_session.scalar(select(AdminUser)).password_hash)
-    assert db_session.scalar(select(func.count()).select_from(Category)) == 6
+    assert db_session.scalar(select(func.count()).select_from(Category)) == 8
     assert db_session.scalar(select(func.count()).select_from(Resource)) == 0
 
 

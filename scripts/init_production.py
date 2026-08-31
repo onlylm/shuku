@@ -8,13 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
 from app.models import AdminUser, Category, Provider
+from app.catalog_v1 import GROUPS
 
 
-DEFAULT_CATEGORIES = [
-    ("文学小说", "literature"), ("历史人文", "history-humanities"),
-    ("社会科学", "social-science"), ("编程开发", "programming"),
-    ("艺术设计", "art-design"), ("公开课程", "open-courses"),
-]
+DEFAULT_CATEGORIES = [(name, "catalog-" + code) for code, name, _, _ in GROUPS]
 
 
 def initialize(db: Session, username: str, password: str) -> bool:
