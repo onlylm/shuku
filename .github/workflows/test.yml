@@ -42,7 +42,16 @@ jobs:
           sudo python3 -m scripts.server_maintenance prepare
           docker compose --env-file deploy/.env -f deploy/compose.yml up -d --wait --wait-timeout 360 db
           # 单独记录首次迁移；避免容器重启后的重复字段错误掩盖原始失败原因。
-          docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps web python -m alembic upgrade head
+          migration_log=$(mktemp)
+          set +e
+          docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps web python -m alembic upgrade head 2>&1 | tee "$migration_log"
+          migration_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$migration_status" -ne 0 ]; then
+            details=$(tail -n 18 "$migration_log" | tr '\n' ' ' | sed 's/%/%25/g;s/\r/%0D/g')
+            echo "::error title=Fresh MySQL migration failed::$details"
+            exit "$migration_status"
+          fi
           docker compose --env-file deploy/.env -f deploy/compose.yml up -d --wait --wait-timeout 360 db web
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
