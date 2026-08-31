@@ -1,0 +1,123 @@
+{% extends "admin/base.html" %}
+{% block title %}云盘上传{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">云盘上传工具</p><h1>上传文件并自动生成链接</h1><p>扫描本地文件，上传到百度网盘或夸克网盘；成功后自动识别图书、检查重复链接并回填到网站。</p></div></div>
+
+{% if error %}<div class="toast toast-danger" role="alert">{{ error }}</div>{% endif %}
+
+<section class="connector-grid" aria-label="网盘连接状态">
+{% for connector in connector_statuses %}
+<article class="panel connector-card">
+  <div><p class="admin-label">{{ connector.name }}</p><h2>{{ connector.status_label }}</h2><p>{{ connector.message }}</p></div>
+  <div class="connector-actions">
+  {% if connector.code == 'baidu' %}
+    <a class="btn btn-secondary" href="{{ baidu_authorize_url }}" target="_blank" rel="noopener">打开百度授权</a>
+    <p class="form-hint">授权后把令牌写入服务器环境配置，不在网页和数据库保存。</p>
+  {% elif not connector.installed %}
+    <form action="{{ url_for('admin_quark_install') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-primary">安装官方连接器</button></form>
+  {% elif connector.configured %}
+    <form action="{{ url_for('admin_quark_login') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn {{ 'btn-secondary' if connector.authorization_state == 'authorized' else 'btn-primary' }}">{{ '检查授权状态' if connector.authorization_state == 'authorized' else '授权夸克账号' }}</button></form>
+  {% endif %}
+  </div>
+</article>
+{% endfor %}
+</section>
+
+<section class="panel upload-scan-panel">
+  <div class="section-head"><div><p class="admin-label">第一步</p><h2>扫描本地电子书</h2></div></div>
+  <form action="{{ url_for('admin_upload_scan') }}" method="post" class="upload-path-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label class="field grow"><span>文件或文件夹路径</span><input name="source_path" value="{{ source_path }}" placeholder="例如 D:\电子书存放\本地测试" required></label>
+    <label class="field scan-limit"><span>最多显示</span><input name="scan_limit" type="number" min="1" max="5000" value="{{ scan_limit }}" required></label>
+    <button class="btn btn-primary" type="submit">扫描文件</button>
+  </form>
+  {% if allowed_source_roots %}<p class="form-hint">允许扫描：{% for root in allowed_source_roots %}{{ root }}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% else %}<p class="form-hint">当前为本地开发环境，可扫描本机路径；部署服务器后必须配置允许目录。</p>{% endif %}
+</section>
+
+{% if scan_results is not none and scan_results %}
+<section class="panel">
+  <div class="section-head"><div><p class="admin-label">第二步</p><h2>确认上传任务</h2><p>已找到 {{ scan_results|length }} 个文件。未匹配的文件可按文件名自动建立草稿资源。</p></div></div>
+  <form action="{{ url_for('admin_upload_queue') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="upload-options">
+      <fieldset><legend>上传到</legend><label><input type="checkbox" name="provider_code" value="baidu" checked> 百度网盘</label><label><input type="checkbox" name="provider_code" value="quark" checked> 夸克网盘</label></fieldset>
+      <fieldset><legend>自动处理</legend><label><input type="checkbox" name="auto_create_resource" value="1" checked> 未匹配时建立草稿资源</label><label><input type="checkbox" name="publish_after_upload" value="1"> 链接检测通过后自动发布</label></fieldset>
+    </div>
+    <div class="scan-table-toolbar">
+      <label class="scan-select-all"><input type="checkbox" id="select-all-scan" checked> 全选 / 反选</label>
+      <div class="scan-submit-hint"><button class="btn btn-primary" type="submit">加入上传队列</button><span class="form-hint">已选 <strong id="scan-selected-count">{{ scan_results|length }}</strong> 个文件；上传后自动创建独立分享链接。</span></div>
+    </div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th><span class="sr-only">选择</span></th><th>文件</th><th>格式 / 大小</th><th>匹配图书</th></tr></thead><tbody>
+    {% for file in scan_results %}<tr>
+      <td><input type="checkbox" name="selected_path" value="{{ file.path }}" checked aria-label="选择 {{ file.name }}" class="scan-file-checkbox"></td>
+      <td><strong>{{ file.name }}</strong><small class="path-line">{{ file.path }}</small></td>
+      <td>{{ file.file_format }} · {{ '%.1f'|format(file.size / 1048576) }} MB</td>
+      <td>{% if file.resource_id %}<a href="{{ url_for('admin_resource_edit', resource_id=file.resource_id) }}">{{ file.resource_title }}</a>{% else %}<span class="badge badge-pending">将建立草稿</span>{% endif %}</td>
+    </tr>{% endfor %}
+    </tbody></table></div>
+    <div class="form-actions"><button class="btn btn-primary" type="submit">加入上传队列</button><span class="form-hint">已选 <strong id="scan-selected-count-bottom">{{ scan_results|length }}</strong> 个文件；上传后自动创建独立分享链接，不会把多本书混成同一个链接。</span></div>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="section-head"><div><p class="admin-label">任务队列</p><h2>待处理任务</h2><p>等待中、上传中、失败或待授权的任务。已完成的任务请查看<a href="{{ url_for('admin_upload_logs') }}">上传日志</a>。</p></div><div class="section-actions"><a class="btn btn-secondary btn-sm" href="{{ url_for('admin_uploads') }}">刷新状态</a><a class="btn btn-secondary btn-sm" href="{{ url_for('admin_upload_logs') }}">上传日志</a><form action="{{ url_for('admin_upload_tasks_retry_problem') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-secondary btn-sm">重试失败任务</button></form><form action="{{ url_for('admin_upload_tasks_clear_problem') }}" method="post" onsubmit="return confirm('只清理任务记录，不删除本地文件和网盘文件。确定继续吗？')"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-danger btn-sm">清理失败记录</button></form></div></div>
+  {% if progress %}
+  <div class="upload-progress" role="status" aria-live="polite">
+    <div class="progress-head">
+      <div>
+        <p class="admin-label">{{ progress.scope_label }}</p>
+        <p class="progress-count"><strong>{{ progress.completed }}</strong> / {{ progress.total }}<span>已完成 {{ progress.percent }}%</span></p>
+      </div>
+      {% if progress.total %}<p class="progress-hint">{% if progress.active %}队列正在处理，页面会自动刷新{% elif progress.failed or progress.needs_auth %}有任务未成功，可重试失败任务{% else %}本轮全部上传完成{% endif %}</p>{% endif %}
+    </div>
+    <div class="progress-track" role="progressbar" aria-valuenow="{{ progress.completed }}" aria-valuemin="0" aria-valuemax="{{ progress.total }}"><span class="progress-bar" style="width: {{ progress.percent }}%"></span></div>
+    <ul class="progress-stats">
+      <li class="is-success"><span>成功</span><strong>{{ progress.completed }}</strong></li>
+      <li class="is-running"><span>进行中</span><strong>{{ progress.running }}</strong></li>
+      <li><span>等待中</span><strong>{{ progress.pending }}</strong></li>
+      <li class="is-failed"><span>失败</span><strong>{{ progress.failed }}</strong></li>
+      <li class="is-auth"><span>待授权</span><strong>{{ progress.needs_auth }}</strong></li>
+      {% if progress.cancelled %}<li><span>已取消</span><strong>{{ progress.cancelled }}</strong></li>{% endif %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if tasks %}<div class="table-wrap"><table class="data-table"><thead><tr><th>任务</th><th>网盘</th><th>文件 / 图书</th><th>状态</th><th>结果</th><th>时间</th><th>操作</th></tr></thead><tbody>
+  {% for task in tasks %}<tr>
+    <td>#{{ task.id }}{% if task.task_type == 'cloud_auth' %}<small>账号授权</small>{% endif %}</td>
+    <td>{{ '百度网盘' if task.payload.provider_code == 'baidu' else '夸克网盘' }}</td>
+    <td><strong>{{ task.payload.file_name or '账号授权' }}</strong>{% if task.payload.resource_id %}<small><a href="{{ url_for('admin_resource_edit', resource_id=task.payload.resource_id) }}">{{ task.payload.resource_title }}</a></small>{% endif %}</td>
+    <td><span class="badge badge-{{ task.status }}">{{ task_labels.get(task.status, task.status) }}</span>{% if task.error_message %}<small class="task-error">{{ task.error_message }}</small>{% endif %}</td>
+    <td>{% if task.result.share_url %}<a href="{{ task.result.share_url }}" target="_blank" rel="noopener">查看分享链接</a>{% if task.result.extract_code %}<small>提取码：{{ task.result.extract_code }}</small>{% endif %}{% elif task.result.message %}{{ task.result.message }}{% else %}—{% endif %}</td>
+    <td class="task-time"><small>创建 {{ task.created_at|dtformat }}</small>{% if task.status in ['completed','failed','cancelled'] %}<small>完成 {{ task.updated_at|dtformat }}</small>{% endif %}</td>
+    <td><div class="row-actions">{% if task.status in ['failed', 'needs_auth'] %}<form action="{{ url_for('admin_upload_task_retry', task_id=task.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-secondary btn-sm">重试</button></form>{% elif task.status == 'pending' %}<form action="{{ url_for('admin_upload_task_cancel', task_id=task.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-secondary btn-sm">取消</button></form>{% endif %}{% if task.status in ['failed', 'needs_auth', 'cancelled'] %}<form action="{{ url_for('admin_upload_task_delete', task_id=task.id) }}" method="post" onsubmit="return confirm('确定删除这条任务记录吗？不会删除文件。')"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-danger btn-sm">删除</button></form>{% endif %}</div></td>
+  </tr>{% endfor %}
+  </tbody></table></div>{% else %}<div class="empty-state"><h3>还没有上传任务</h3><p>先扫描一个测试文件夹，再选择百度、夸克或两边同时上传。</p></div>{% endif %}
+</section>
+{% if has_active_tasks and scan_results is none %}<script>window.setTimeout(function () { window.location.reload(); }, 3500);</script>{% endif %}
+{% if scan_results is not none and scan_results %}
+<script>
+(function () {
+  const selectAll = document.getElementById('select-all-scan');
+  const boxes = document.querySelectorAll('.scan-file-checkbox');
+  const countTop = document.getElementById('scan-selected-count');
+  const countBottom = document.getElementById('scan-selected-count-bottom');
+  function updateCount() {
+    const checked = document.querySelectorAll('.scan-file-checkbox:checked').length;
+    if (countTop) countTop.textContent = checked;
+    if (countBottom) countBottom.textContent = checked;
+    if (selectAll) selectAll.checked = checked === boxes.length;
+  }
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      boxes.forEach(function (box) { box.checked = selectAll.checked; });
+      updateCount();
+    });
+  }
+  boxes.forEach(function (box) {
+    box.addEventListener('change', updateCount);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

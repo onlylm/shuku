@@ -1,0 +1,19 @@
+[project]
+name = "quiet-shelf"
+version = "0.1.0"
+description = "电子书资源索引与多渠道网盘分发系统"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --disable-warnings --strict-markers"
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+

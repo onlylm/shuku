@@ -1,0 +1,19 @@
+{% extends "admin/base.html" %}{% block title %}仪表盘{% endblock %}{% block content %}
+<div class="page-heading"><div><p class="eyebrow">数据概览</p><h1>运营数据</h1><p>今日关键指标与资源整体情况。</p></div><div class="heading-actions"><a class="btn btn-secondary" href="{{ url_for('admin_import') }}">导入表格</a><a class="btn btn-primary" href="{{ url_for('admin_resource_new') }}">新增资源</a></div></div>
+<section class="metric-grid">
+  <a class="metric-card metric-link" href="{{ url_for('admin_resources') }}"><span class="metric-label">全部资源</span><strong>{{ stats.total_resources }}</strong><small>{{ stats.published_resources }} 个已发布</small><span class="metric-arrow">查看资源 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_resources') }}"><span class="metric-label">今日更新</span><strong>{{ stats.today_updated }}</strong><small>今日发布/更新的资源</small><span class="metric-arrow">查看资源 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_analytics') }}"><span class="metric-label">今日点击</span><strong>{{ stats.today_clicks }}</strong><small>网盘入口点击次数</small><span class="metric-arrow">查看数据 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_analytics') }}"><span class="metric-label">今日下载</span><strong>{{ stats.today_downloads }}</strong><small>跳转网盘的下载意图</small><span class="metric-arrow">查看数据 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_links') }}?status=active&amp;visibility=visible"><span class="metric-label">前台可用入口</span><strong>{{ stats.visible_links }}</strong><small>检测正常并允许显示</small><span class="metric-arrow">查看入口 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_links') }}?status=problem"><span class="metric-label">问题链接</span><strong>{{ stats.problem_links }}</strong><small>失效或检测异常</small><span class="metric-arrow">处理问题 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_analytics') }}"><span class="metric-label">累计跳转</span><strong>{{ stats.total_clicks }}</strong><small>历史累计点击</small><span class="metric-arrow">查看数据 →</span></a>
+  <a class="metric-card metric-link" href="{{ url_for('admin_analytics') }}"><span class="metric-label">无结果搜索</span><strong>{{ stats.zero_searches }}</strong><small>今日 {{ stats.today_zero_searches }} 次</small><span class="metric-arrow">查看数据 →</span></a>
+</section>
+<section class="dashboard-grid">
+  <aside class="admin-card">
+    <div class="card-header"><div><h2>无结果搜索</h2><p>用于判断下一批可以补充什么。</p></div></div>
+    <ul class="alert-list">{% for item in zero_queries %}<li class="alert-item"><span class="alert-dot"></span><div><strong>{{ item.raw_query }}</strong><small>{{ item.searched_at.strftime('%m-%d %H:%M') }}</small></div></li>{% else %}<li class="alert-item">暂无记录</li>{% endfor %}</ul>
+  </aside>
+</section>
+{% endblock %}

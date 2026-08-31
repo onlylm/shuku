@@ -1,0 +1,7 @@
+{% extends "web/base.html" %}
+{% from "web/_macros.html" import book_card with context %}
+{% block title %}{{ category.name }}｜{{ app_name }}{% endblock %}
+{% block description %}{{ category.description or ('浏览' ~ app_name ~ '的' ~ category.name ~ '资源。') }}{% endblock %}
+{% block content %}<section class="section"><div class="container">
+{% if category.parent %}{% set nav_children = category.parent.children|selectattr('is_visible')|list %}{% else %}{% set nav_children = category.children|selectattr('is_visible')|list %}{% endif %}{% if nav_children %}<nav class="sub-category-nav" aria-label="{% if category.parent %}同级分类{% else %}下级分类{% endif %}">{% for child in nav_children %}<a class="chip{% if child.id == category.id %} active{% endif %}" href="{{ url_for('category_detail', slug=child.slug) }}">{{ child.name }}</a>{% endfor %}</nav>{% endif %}
+{% if cards %}<div class="book-grid">{% for card in cards %}{{ book_card(card) }}{% endfor %}</div>{% include "shared/_pagination.html" %}{% else %}<div class="panel empty-state"><p>该分类暂时没有可用资源。</p></div>{% endif %}</div></section>{% endblock %}

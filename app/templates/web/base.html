@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{% block description %}收录公版、开放许可与已获授权的图书和教程，提供清晰的网盘获取入口。{% endblock %}">
+  <meta name="robots" content="{{ seo_robots|default('index,follow') }}">
+  <title>{% block title %}{{ app_name }}｜找到值得读的那一本{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
+  {% if canonical %}<link rel="canonical" href="{{ canonical }}">{% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <div class="container header-primary">
+      <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">{{ app_name }}</span></a>
+      <form class="header-search" action="{{ url_for('search') }}" method="get" role="search">
+        <label class="skip-link" for="header-search">搜索资源</label>
+        <input id="header-search" name="q" type="search" value="{{ q|default('') }}" placeholder="搜索书名、作者或 ISBN">
+        <button type="submit" aria-label="搜索">搜索</button>
+      </form>
+      <button class="menu-button" type="button" aria-label="打开菜单" aria-expanded="false" data-menu-button>☰</button>
+    </div>
+    <nav class="catalog-nav" aria-label="主导航"><div class="container catalog-nav-inner">
+      <a class="{{ 'active' if active_nav == 'home' }}" href="{{ url_for('home') }}">首页</a><a class="{{ 'active' if active_nav == 'recent' }}" href="{{ url_for('all_resources') }}">最近更新</a>{% for item in nav_categories|default([]) %}<a class="{{ 'active' if active_nav == 'category' and active_category and active_category.id == item.id }}" href="{{ url_for('category_detail', slug=item.slug) }}">{{ item.name }}</a>{% endfor %}<a class="{{ 'active' if active_nav == 'collections' }}" href="{{ url_for('collections') }}">主题合集</a>
+    </div></nav>
+    <nav class="mobile-nav" aria-label="移动导航" data-mobile-nav>
+      <a class="{{ 'active' if active_nav == 'home' }}" href="{{ url_for('home') }}">首页</a><a class="{{ 'active' if active_nav == 'recent' }}" href="{{ url_for('all_resources') }}">最近更新</a>{% for item in nav_categories|default([]) %}<a class="{{ 'active' if active_nav == 'category' and active_category and active_category.id == item.id }}" href="{{ url_for('category_detail', slug=item.slug) }}">{{ item.name }}</a>{% endfor %}<a class="{{ 'active' if active_nav == 'collections' }}" href="{{ url_for('collections') }}">主题合集</a>
+    </nav>
+  </header>
+  <main id="main">{% block content %}{% endblock %}</main>
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页"><span class="brand-mark"></span><span class="brand-name">{{ app_name }}</span></a>
+        <p>整理公版、开放许可或已取得授权的图书与教程。本站仅提供资源索引，不直接存储第三方分享文件。</p>
+      </div>
+      <div class="footer-links">
+        <h3>浏览</h3>
+        <a href="{{ url_for('all_resources') }}">最近更新</a>
+        <a href="{{ url_for('collections') }}">主题合集</a>
+      </div>
+      <div class="footer-links">
+        <h3>说明</h3>
+        <a href="{{ url_for('disclaimer') }}">资源说明与免责声明</a>
+      </div>
+      {% if friend_links %}
+      <div class="footer-links">
+        <h3>友情链接</h3>
+        {% for link in friend_links %}<a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.name }}</a>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="container footer-bottom"><span>© 2026 {{ app_name }}</span><span>不存储第三方分享文件</span></div>
+  </footer>
+  <script src="{{ url_for('static', path='/js/app.js') }}" defer></script>
+</body>
+</html>

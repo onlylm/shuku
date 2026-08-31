@@ -1,0 +1,308 @@
+{
+  "$defs": {
+    "OrganizerBook": {
+      "additionalProperties": false,
+      "properties": {
+        "book_id": {
+          "pattern": "^BK_[0-9a-f]{32}$",
+          "title": "Book Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "epub_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Epub Sha256",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "author": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Author"
+        },
+        "translator": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Translator"
+        },
+        "publisher": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publisher"
+        },
+        "isbn": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Isbn"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 30000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "maxLength": 30,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "zh-CN",
+          "title": "Language"
+        },
+        "publish_year": {
+          "anyOf": [
+            {
+              "maximum": 9999,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Publish Year"
+        },
+        "main_category": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Main Category"
+        },
+        "subcategory": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subcategory"
+        },
+        "rights_review_status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "confirmed"
+          ],
+          "title": "Rights Review Status",
+          "type": "string"
+        },
+        "copyright_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "",
+                "authorized",
+                "public_domain",
+                "open_license"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Copyright Status"
+        },
+        "source_reference": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Reference"
+        },
+        "cover_url": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cover Url"
+        },
+        "formats": {
+          "const": "EPUB",
+          "default": "EPUB",
+          "title": "Formats",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/OrganizerLink"
+          },
+          "maxItems": 10,
+          "title": "Links",
+          "type": "array"
+        }
+      },
+      "required": [
+        "book_id",
+        "revision",
+        "epub_sha256",
+        "title"
+      ],
+      "title": "OrganizerBook",
+      "type": "object"
+    },
+    "OrganizerLink": {
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        },
+        "extract_code": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extract Code"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "OrganizerLink",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "2.0",
+      "default": "2.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "site_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Site Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Workspace Id",
+      "type": "string"
+    },
+    "export_id": {
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Export Id",
+      "type": "string"
+    },
+    "books": {
+      "items": {
+        "$ref": "#/$defs/OrganizerBook"
+      },
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Books",
+      "type": "array"
+    }
+  },
+  "required": [
+    "site_id",
+    "workspace_id",
+    "export_id",
+    "books"
+  ],
+  "title": "OrganizerPackage",
+  "type": "object"
+}

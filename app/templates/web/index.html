@@ -1,0 +1,5 @@
+{% extends "web/base.html" %}
+{% from "web/_macros.html" import book_card with context %}
+{% block content %}
+<section class="hero"><div class="container hero-single"><p class="eyebrow">安静、清晰、专注阅读</p><h1>找到值得读的那一本，<br>从一次清晰的检索开始。</h1><p class="hero-lead">{{ app_name }}整理公版、开放许可或已取得授权的优质图书与教程，按文学小说、历史文化、心理学、商业管理等主题分类归档，提供清晰的网盘获取入口。你可以按书名、作者或 ISBN 检索，也可以按分类浏览最近整理入库的资源。</p>{% if stats %}<div class="hero-stats"><span><strong>{{ stats.total_resources }}</strong>本资源</span><span><strong>{{ stats.category_count }}</strong>个分类</span><span><strong>{{ stats.today_updated }}</strong>本今日更新</span></div>{% endif %}</div></section>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "admin/base.html" %}
+{% block title %}本地软件对接{% endblock %}
+{% block content %}
+<div class="section-head"><div><h1>本地软件对接</h1><p>在电脑整理和上传电子书，将图书资料及分享链接安全同步到本站。</p></div></div>
+<section class="panel" style="padding:24px;margin-bottom:20px">
+  <h2>连接信息</h2><p>站点编号：<strong>{{ site_id }}</strong></p><p>封面允许域名：{{ cover_hosts }}</p>
+  <p>在服务器配置 ORGANIZER_COVER_HOSTS，填写你的图片域名；多个域名用英文逗号分隔。正式站点须配置唯一 ORGANIZER_SITE_ID 并启用 HTTPS。</p>
+  <p>软件先预检，确认后才导入；图书编号、内容哈希和站点身份共同防止对应错书。</p>
+</section>
+{% if new_token %}<section class="panel" style="padding:24px;margin-bottom:20px"><h2>授权码仅显示这一次</h2><p>复制到本地软件“连接设置 → 网站同步授权”，不要发到聊天或保存进表格。</p><textarea readonly rows="3" style="width:100%">{{ new_token }}</textarea></section>{% endif %}
+<section class="panel" style="padding:24px"><h2>同步授权</h2>
+<form method="post" action="/admin/organizer/tokens"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>设备名称 <input name="label" maxlength="100" value="我的电脑"></label> <button class="btn btn-primary">生成专用授权</button></form>
+<table class="admin-table"><thead><tr><th>设备</th><th>状态</th><th>操作</th></tr></thead><tbody>{% for token in tokens %}<tr><td>{{ token.label }}</td><td>{{ '有效' if token.is_active else '已撤销' }}</td><td>{% if token.is_active %}<form method="post" action="/admin/organizer/tokens/{{ token.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-secondary">撤销授权</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table>
+</section>
+{% endblock %}

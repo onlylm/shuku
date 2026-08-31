@@ -1,0 +1,13 @@
+{% macro book_card(card) -%}
+{% set r = card.resource %}
+<a class="book-card" href="{{ url_for('resource_detail', slug=r.slug) }}">
+  {% if r.cover_image %}
+  <div class="cover cover-image"><img src="{{ r.cover_image }}" alt="《{{ r.title }}》封面" loading="lazy"></div>
+  {% else %}
+  <div class="cover {{ ['green','sand','blue','rose'][r.id % 4] }}">
+    <span class="cover-kicker">{{ resource_type_label(r.resource_type) }}</span><strong class="cover-title">{{ r.title }}</strong>{% if r.author %}<span class="cover-author">{{ r.author }}</span>{% endif %}
+  </div>
+  {% endif %}
+  <div class="book-meta"><span class="book-type">{{ r.formats or '电子书' }}</span><h3>{{ r.title }}</h3><p>{% if r.author %}{{ r.author }} · {% endif %}{{ card.link_count }} 个可用入口</p></div>
+</a>
+{%- endmacro %}

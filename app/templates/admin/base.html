@@ -1,0 +1,16 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>{% block title %}管理后台{% endblock %}｜{{ app_name }}</title><link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml"><link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}"></head>
+<body class="admin-body"><a class="skip-link" href="#admin-main">跳到主要内容</a><div class="admin-shell">
+<aside class="admin-sidebar" data-admin-sidebar><a class="brand" href="{{ url_for('admin_dashboard') }}"><span class="brand-mark"></span><span class="brand-name">{{ app_name }}</span></a><p class="admin-label">内容管理</p><nav class="admin-nav">
+<a class="{{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_dashboard') }}"><span class="nav-glyph">⌂</span>仪表盘</a>
+<a class="{{ 'active' if active == 'resources' }}" href="{{ url_for('admin_resources') }}"><span class="nav-glyph">▤</span>资源管理</a>
+<a class="{{ 'active' if active == 'import' }}" href="{{ url_for('admin_import') }}"><span class="nav-glyph">⇧</span>表格导入</a>
+<a class="{{ 'active' if active == 'uploads' }}" href="{{ url_for('admin_uploads') }}"><span class="nav-glyph">⇪</span>云盘上传</a>
+<a class="{{ 'active' if active == 'organizer' }}" href="{{ url_for('admin_organizer') }}"><span class="nav-glyph">▣</span>本地软件对接</a>
+<a class="{{ 'active' if active == 'links' }}" href="{{ url_for('admin_links') }}"><span class="nav-glyph">⌁</span>链接检测</a>
+<a class="{{ 'active' if active == 'categories' }}" href="{{ url_for('admin_categories') }}"><span class="nav-glyph">◇</span>分类管理</a>
+<a class="{{ 'active' if active == 'providers' }}" href="{{ url_for('admin_providers') }}"><span class="nav-glyph">☁</span>网盘渠道</a>
+<a class="{{ 'active' if active == 'friend_links' }}" href="{{ url_for('admin_friend_links') }}"><span class="nav-glyph">↗</span>友情链接</a>
+<a class="{{ 'active' if active == 'analytics' }}" href="{{ url_for('admin_analytics') }}"><span class="nav-glyph">◫</span>访问数据</a></nav>
+<div class="admin-sidebar-foot"><a href="{{ url_for('home') }}" target="_blank">查看前台 ↗</a></div></aside>
+<div class="admin-main"><header class="admin-topbar"><button class="btn btn-secondary btn-sm admin-menu-button" type="button" data-admin-menu>☰</button><div><span class="admin-label">阶段一 · 本地环境</span></div><div class="topbar-actions"><span class="admin-user"><span class="avatar">{{ (admin.display_name or admin.username)[0] }}</span>{{ admin.display_name or admin.username }}</span><form action="{{ url_for('admin_logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="btn btn-secondary btn-sm">退出</button></form></div></header>
+<main class="admin-content" id="admin-main">{% if flash %}<div class="toast toast-{{ flash.level }}" role="status">{{ flash.message }}</div>{% endif %}{% block content %}{% endblock %}</main></div></div><script src="{{ url_for('static', path='/js/app.js') }}" defer></script></body></html>

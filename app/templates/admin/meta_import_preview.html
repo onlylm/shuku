@@ -1,0 +1,127 @@
+{% extends "admin/base.html" %}
+{% block title %}补全预检{% endblock %}
+{% block content %}
+{% set pending = batch.status == 'meta_preview' or batch.status == 'meta_partial' %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">补全确认</p>
+    <h1>元数据补全预检</h1>
+    <p>{{ batch.original_filename }} · {{ batch.total_rows }} 行 · {{ status_label(batch.status) }}</p>
+  </div>
+  <a class="btn btn-secondary" href="{{ url_for('admin_meta_import') }}">返回补全</a>
+</div>
+
+<section class="import-summary">
+  <div class="summary-cell"><span>可补全</span><strong>{{ batch.ready_rows }}</strong></div>
+  <div class="summary-cell warning"><span>需确认</span><strong>{{ batch.warning_rows }}</strong></div>
+  <div class="summary-cell danger"><span>未匹配</span><strong>{{ batch.error_rows }}</strong></div>
+  <div class="summary-cell"><span>无需更新</span><strong>{{ batch.duplicate_rows }}</strong></div>
+  <div class="summary-cell"><span>已补全</span><strong>{{ batch.committed_rows }}</strong></div>
+</section>
+
+<form action="{{ url_for('admin_meta_import_commit', batch_id=batch.id) }}" method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <section class="admin-card">
+    <div class="import-toolbar">
+      <div>
+        <strong>确认待补全的行</strong>
+        <p class="hint">绿色默认勾选；黄色是相似度匹配，请人工判断后手动勾选；未匹配的行需要先在资源管理里建立该书。</p>
+      </div>
+      {% if pending %}<button class="btn btn-primary">补全已勾选行</button>{% endif %}
+    </div>
+
+    {% if pending %}
+    <div class="meta-options">
+      <label class="option-item">
+        <input type="checkbox" name="overwrite" value="1">
+        <span>覆盖已有字段<em>不勾选时只填补空缺字段，已有内容保持不变</em></span>
+      </label>
+      <label class="option-item">
+        <span>分类处理</span>
+        <select name="category_mode">
+          <option value="append" selected>追加到现有分类</option>
+          <option value="replace">替换成表格里的分类</option>
+        </select>
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="table-scroll">
+      <table class="import-table">
+        <thead>
+          <tr><th>选</th><th>行</th><th>书名 / ISBN</th><th>匹配方式</th><th>将补齐的字段</th><th>分类</th><th>状态与说明</th></tr>
+        </thead>
+        <tbody>
+        {% for row in actionable_rows %}
+          {% set parsed = row.parsed_data or {} %}
+          <tr class="{{ 'row-danger' if row.row_status in ['error','unmatched'] else ('row-warning' if row.row_status == 'warning' else ('row-muted' if row.row_status == 'noop' else '')) }}">
+            <td>
+              {% if pending and row.row_status in ['ready','warning'] %}
+              <input type="checkbox" name="selected_row" value="{{ row.id }}" {{ 'checked' if row.row_status == 'ready' }}>
+              {% endif %}
+            </td>
+            <td>{{ row.row_number }}</td>
+            <td>
+              <strong>{{ parsed.get('values', {}).get('title') or (parsed.get('match', {}).get('resource_title') if parsed.get('match') else '') or '—' }}</strong>
+              <small class="block-text">ISBN：{{ parsed.get('values', {}).get('isbn') or '—' }}</small>
+            </td>
+            <td>
+              {% set match = parsed.get('match') or {} %}
+              {% if match.get('resource_id') %}
+                <a href="{{ url_for('admin_resource_edit', resource_id=match.get('resource_id')) }}">{{ match.get('resource_title') }}</a>
+                <small class="block-text">{{ match_labels.get(match.get('type'), match.get('type') or '—') }}{% if match.get('score') %} {{ match.get('score') }}%{% endif %}</small>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% for item in parsed.get('fill', []) %}
+                <span class="field-chip">{{ item.label }}：{{ item.new if not item.old else (item.old ~ ' → ' ~ item.new) }}</span>
+              {% else %}—{% endfor %}
+            </td>
+            <td>
+              {% for plan in parsed.get('categories', []) %}
+                <span class="status-badge {{ 'status-success' if plan.action == 'existing' else ('status-warning' if plan.action == 'matched' else 'status-info') }}">{% if plan.parent %}<em class="cat-parent">{{ plan.parent }} › </em>{% endif %}{{ plan.target }}{% if plan.action == 'created' %}（新建）{% elif plan.action == 'matched' %}（复用）{% endif %}</span>
+              {% else %}—{% endfor %}
+            </td>
+            <td>
+              <span class="status-badge status-{{ 'success' if row.row_status in ['ready','committed'] else ('danger' if row.row_status in ['error','unmatched'] else ('warning' if row.row_status == 'warning' else 'neutral')) }}">{{ status_label(row.row_status) }}</span>
+              <small class="block-text">{{ row.message or '' }}</small>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty-cell">这一批里没有能匹配到系统图书的行。</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if unmatched_rows %}
+    <details class="unmatched-block">
+      <summary>未匹配 {{ unmatched_rows|length }} 行<span class="unmatched-hint">书单里有、但网站还没有这本书，需要先扫描上传文件</span></summary>
+      <div class="table-scroll">
+        <table class="import-table unmatched-table">
+          <thead><tr><th>行</th><th>书名 / 文件名</th><th>说明</th></tr></thead>
+          <tbody>
+          {% for row in unmatched_rows[:300] %}
+            {% set parsed = row.parsed_data or {} %}
+            <tr>
+              <td>{{ row.row_number }}</td>
+              <td>{{ parsed.get('values', {}).get('title') or parsed.get('values', {}).get('file_name') or '—' }}</td>
+              <td>{{ row.message or '未匹配到资源' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if unmatched_rows|length > 300 %}<p class="form-hint">仅列出前 300 行，其余 {{ unmatched_rows|length - 300 }} 行同样是未匹配状态。</p>{% endif %}
+    </details>
+    {% endif %}
+
+    {% if pending %}
+    <div class="import-footer">
+      <p>提交后图书字段立即更新；新建的分类会同步出现在分类管理和前台导航里。</p>
+      <button class="btn btn-primary">补全已勾选行</button>
+    </div>
+    {% endif %}
+  </section>
+</form>
+{% endblock %}

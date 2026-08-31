@@ -1,0 +1,5 @@
+{% extends "web/base.html" %}
+{% from "web/_macros.html" import book_card with context %}
+{% block title %}最近更新｜{{ app_name }}{% endblock %}
+{% block description %}浏览{{ app_name }}最近整理入库的全部图书与教程。{% endblock %}
+{% block content %}<section class="section"><div class="container">{% if cards %}<div class="book-grid">{% for card in cards %}{{ book_card(card) }}{% endfor %}</div>{% include "shared/_pagination.html" %}{% else %}<div class="panel empty-state"><p>暂时没有可用资源。</p></div>{% endif %}</div></section>{% endblock %}

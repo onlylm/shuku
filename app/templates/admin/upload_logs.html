@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% block title %}上传日志{% endblock %}
+{% block content %}
+<div class="page-head"><div><p class="eyebrow">上传历史</p><h1>上传日志</h1><p>已完成的网盘上传记录，可按文件名搜索。</p></div><div class="section-actions"><a class="btn btn-secondary btn-sm" href="{{ url_for('admin_uploads') }}">返回任务队列</a></div></div>
+<section class="panel">
+  <form class="import-toolbar" method="get">
+    <input class="input" name="q" value="{{ q }}" placeholder="文件名">
+    <button class="btn btn-secondary">搜索</button>
+  </form>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>任务</th><th>网盘</th><th>文件 / 图书</th><th>结果</th><th>时间</th></tr></thead><tbody>
+  {% for task in tasks %}<tr>
+    <td>#{{ task.id }}</td>
+    <td>{{ '百度网盘' if task.payload.provider_code == 'baidu' else '夸克网盘' }}</td>
+    <td><strong>{{ task.payload.file_name }}</strong>{% if task.payload.resource_id %}<small><a href="{{ url_for('admin_resource_edit', resource_id=task.payload.resource_id) }}">{{ task.payload.resource_title }}</a></small>{% endif %}</td>
+    <td>{% if task.result.share_url %}<a href="{{ task.result.share_url }}" target="_blank" rel="noopener">查看分享链接</a>{% if task.result.extract_code %}<small>提取码：{{ task.result.extract_code }}</small>{% endif %}{% elif task.result.message %}{{ task.result.message }}{% else %}—{% endif %}</td>
+    <td class="task-time"><small>创建 {{ task.created_at|dtformat }}</small><small>完成 {{ task.updated_at|dtformat }}</small></td>
+  </tr>{% else %}<tr><td colspan="5">没有已完成的上传记录</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% include "shared/_pagination.html" %}
+</section>
+{% endblock %}

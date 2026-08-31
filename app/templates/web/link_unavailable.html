@@ -1,0 +1,1 @@
+{% extends "web/base.html" %}{% block title %}入口暂不可用｜{{ app_name }}{% endblock %}{% block content %}<section class="section"><div class="container"><div class="panel empty-state"><p class="eyebrow">入口不可用</p><h1>这个下载入口暂时无法访问</h1><p>可以返回资源列表选择其他内容，或稍后再试。</p><a class="btn btn-primary" href="{{ url_for('all_resources') }}">浏览其他资源</a></div></div></section>{% endblock %}

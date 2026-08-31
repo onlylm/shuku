@@ -1,0 +1,9 @@
+{% if pagination.pages > 1 %}
+<nav class="pagination" aria-label="分页导航">
+  {% if pagination.prev_url %}<a class="page-link page-step" href="{{ pagination.prev_url }}" rel="prev">上一页</a>{% else %}<span class="page-link page-step disabled">上一页</span>{% endif %}
+  {% for item in pagination.links %}
+    {% if item.ellipsis %}<span class="page-ellipsis" aria-hidden="true">…</span>{% elif item.current %}<span class="page-link current" aria-current="page">{{ item.number }}</span>{% else %}<a class="page-link" href="{{ item.url }}">{{ item.number }}</a>{% endif %}
+  {% endfor %}
+  {% if pagination.next_url %}<a class="page-link page-step" href="{{ pagination.next_url }}" rel="next">下一页</a>{% else %}<span class="page-link page-step disabled">下一页</span>{% endif %}
+</nav>
+{% endif %}

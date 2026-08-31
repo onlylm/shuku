@@ -1,0 +1,7 @@
+-r requirements.txt
+PySide6>=6.8,<7
+Pillow>=11.1,<13
+defusedxml>=0.7.1,<1
+boto3>=1.36,<2
+keyring>=25.6,<27
+pyinstaller>=6.12,<7

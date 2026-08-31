@@ -1,0 +1,95 @@
+{% extends "admin/base.html" %}
+{% block title %}资源管理{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">资源列表</p>
+    <h1>资源管理</h1>
+    <p>共 {{ pagination.total }} 条，每页显示 {{ pagination.per_page }} 条。</p>
+  </div>
+  <a class="btn btn-primary" href="{{ url_for('admin_resource_new') }}">新增资源</a>
+</div>
+{% if recent %}
+<section class="admin-card">
+  <div class="card-header"><div><h2>最近编辑</h2><p>最近更新的资源。</p></div><a class="text-link" href="{{ url_for('admin_resources') }}">全部资源 →</a></div>
+  <div class="table-responsive">
+    <table class="recent-table">
+      <thead><tr><th>资源</th><th>状态</th><th>更新时间</th></tr></thead>
+      <tbody>
+        {% for item in recent %}
+        <tr>
+          <td class="resource-cell"><span class="mini-cover">{{ item.title[0] }}</span><a href="{{ url_for('admin_resource_edit', resource_id=item.id) }}"><strong>{{ item.title }}</strong><small>{{ item.author or '作者待补充' }}</small></a></td>
+          <td><span class="status-badge status-{{ 'success' if item.publish_status == 'published' else 'neutral' }}">{{ status_label(item.publish_status) }}</span></td>
+          <td>{{ item.updated_at.strftime('%m-%d %H:%M') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+<section class="admin-card">
+  <form class="import-toolbar" method="get">
+    <input class="input" name="q" value="{{ q }}" placeholder="书名、作者或 ISBN">
+    <select class="select" name="status">
+      <option value="">全部状态</option>
+      {% for value in ['draft','published','archived'] %}
+      <option value="{{ value }}" {{ 'selected' if status == value }}>{{ status_label(value) }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn-secondary">筛选</button>
+  </form>
+  <form action="{{ url_for('admin_resources_batch_delete') }}" method="post" onsubmit="return confirm('确定删除选中的资源吗？关联的网盘入口、点击记录也会被清除，不可恢复。')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="batch-actions">
+      <label class="batch-select-all"><input type="checkbox" id="select-all-resources"> 全选本页</label>
+      <button type="submit" class="btn btn-danger btn-sm">批量删除</button>
+    </div>
+    <div class="table-responsive">
+      <table class="recent-table">
+        <thead>
+          <tr>
+            <th class="cell-check"><span class="sr-only">选择</span></th>
+            <th>资源</th>
+            <th>分类</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in resources %}
+          <tr>
+            <td class="cell-check"><input type="checkbox" name="selected_resource" value="{{ item.id }}" class="resource-checkbox"></td>
+            <td class="resource-cell">
+              <span class="mini-cover">{{ item.title[0] }}</span>
+              <div>
+                <strong>{{ item.title }}</strong>
+                <small>{{ item.author or '—' }} · {{ item.formats or '格式待补充' }}</small>
+              </div>
+            </td>
+            <td>{{ item.categories|map(attribute='name')|join('、') or '—' }}</td>
+            <td><span class="status-badge status-{{ 'success' if item.publish_status == 'published' else 'neutral' }}">{{ status_label(item.publish_status) }}</span></td>
+            <td><a class="btn btn-secondary btn-sm" href="{{ url_for('admin_resource_edit', resource_id=item.id) }}">编辑</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="5">没有匹配资源</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+  {% include "shared/_pagination.html" %}
+</section>
+<script>
+(function () {
+  const selectAll = document.getElementById('select-all-resources');
+  const boxes = document.querySelectorAll('.resource-checkbox');
+  if (!selectAll) return;
+  selectAll.addEventListener('change', function () {
+    boxes.forEach(function (box) { box.checked = selectAll.checked; });
+  });
+})();
+</script>
+{% endblock %}

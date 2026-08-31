@@ -1,0 +1,60 @@
+name: Website checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install website test dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Check public release contents
+        run: python scripts/check_public_release.py
+      - name: Test
+        env:
+          APP_ENV: test
+          CLOUD_UPLOAD_WORKER_ENABLED: 'false'
+          LINK_CHECK_AUTOMATIC_ENABLED: 'false'
+        run: |
+          bash -n deploy.sh scripts/install_docker.sh scripts/start.sh
+          pytest -q --ignore=tests/test_organizer.py
+
+  linux-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate isolated CI configuration
+        run: |
+          python3 scripts/server_config.py init --domain books.example.com > /dev/null
+          docker compose --env-file deploy/.env -f deploy/compose.yml config --quiet
+      - name: Build and check MySQL migrations
+        run: |
+          docker compose --env-file deploy/.env -f deploy/compose.yml build web
+          docker compose --env-file deploy/.env -f deploy/compose.yml up -d --wait --wait-timeout 360 db web
+          docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
+          docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
+          docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready').status == 200"
+          docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Verify private configuration is not in image
+        run: |
+          docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -c "from pathlib import Path; assert not Path('/app/.env').exists(); assert not Path('/app/deploy/.env').exists(); assert not Path('/app/local.db').exists()"
+      - name: Exercise backup and checksum validation
+        run: |
+          bash deploy.sh backup
+          snapshot=$(find backups -mindepth 1 -maxdepth 1 -type d ! -name '*.partial' | head -n 1)
+          python3 scripts/server_backup.py verify "$snapshot"
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose --env-file deploy/.env -f deploy/compose.yml logs --tail=80
+      - name: Stop CI containers
+        if: always()
+        run: docker compose --env-file deploy/.env -f deploy/compose.yml down

@@ -1,0 +1,8 @@
+{% extends "web/base.html" %}
+{% from "web/_macros.html" import book_card with context %}
+{% block title %}{% if q %}“{{ q }}”的搜索结果{% else %}搜索资源{% endif %}｜{{ app_name }}{% endblock %}
+{% block content %}<section class="section"><div class="container">
+<nav class="breadcrumbs"><a href="{{ url_for('home') }}">首页</a><span>›</span><span>资源搜索</span></nav>
+<div class="section-heading"><div><p class="eyebrow">资源搜索</p><h1>{% if q %}“{{ q }}”的搜索结果{% else %}搜索书房{% endif %}</h1><p>{% if q %}找到 {{ pagination.total }} 项当前可用资源。{% else %}请在顶部搜索框输入书名、作者或 ISBN。{% endif %}</p></div></div>
+{% if cards %}<div class="book-grid">{% for card in cards %}{{ book_card(card) }}{% endfor %}</div>{% include "shared/_pagination.html" %}{% elif q %}<div class="panel empty-state"><h2>暂时没有找到</h2><p>可以尝试缩短关键词，或只输入书名、作者名。</p></div>{% endif %}
+</div></section>{% endblock %}

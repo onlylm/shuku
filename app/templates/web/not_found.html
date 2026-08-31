@@ -1,0 +1,1 @@
+{% extends "web/base.html" %}{% block title %}页面未找到｜{{ app_name }}{% endblock %}{% block content %}<section class="section"><div class="container"><div class="panel empty-state"><p class="eyebrow">404</p><h1>这里没有找到内容</h1><p>{{ detail }}</p><a class="btn btn-primary" href="{{ url_for('home') }}">返回首页</a></div></div></section>{% endblock %}
