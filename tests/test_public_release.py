@@ -12,6 +12,8 @@ from scripts.check_public_release import FORBIDDEN_PATHS, is_private_path
     "runtime/log.txt",
     "backups/snapshot/deploy.env",
     "deploy/.env",
+    "deploy/control/status/job-test.json",
+    "deploy/domains/aliases.caddy",
     ".env.production",
     "local.db",
     "data/local.sqlite3-wal",

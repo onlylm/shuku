@@ -25,7 +25,8 @@ def test_import_commit_creates_hidden_pending_link(db_session):
     resource = db_session.scalar(select(Resource).where(Resource.title == "Python测试书"))
     link = db_session.scalar(select(ChannelShareLink))
     assert resource is not None
-    assert resource.publish_status == "published"
+    assert resource.publish_status == "draft"
+    assert resource.copyright_status == "pending"
     assert link.status == "pending"
     assert link.is_visible is False
 

@@ -46,6 +46,11 @@ def read_config(path: Path) -> dict[str, str]:
 
 def validate(values: dict[str, str]) -> None:
     hostname(values.get("SITE_DOMAIN", ""))
+    aliases = [a for a in values.get("SITE_ALIASES", "").split(",") if a]
+    if len(aliases) > 21:
+        raise ValueError("最多20个别名，另外保留1个旧主域名")
+    for alias in aliases:
+        hostname(alias)
     for key in ("SESSION_SECRET", "MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", "INITIAL_ADMIN_PASSWORD"):
         minimum = 48 if key == "SESSION_SECRET" else 24
         if not re.fullmatch(rf"[A-Za-z0-9_-]{{{minimum},128}}", values.get(key, "")):

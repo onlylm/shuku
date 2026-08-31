@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 from pathlib import Path
 
 datas = []
+datas += [('ebook_organizer/assets/ebook-logo.png', 'ebook_organizer/assets')]
 binaries = []
 hiddenimports = ['keyring.backends.Windows']
 tmp_ret = collect_all('defusedxml')
@@ -34,6 +35,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='Ebook',
+    icon='ebook_organizer/assets/ebook-logo.png',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

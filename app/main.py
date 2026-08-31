@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.admin.routes import router as admin_router
+from app.admin.settings import router as settings_router
 from app.api.routes import router as api_router
 from app.api.organizer import router as organizer_router
 from app.core.config import get_settings
@@ -23,6 +24,8 @@ from app.services.presentation import language_label, provider_label, resource_t
 from app.services.link_monitor import link_monitor_loop
 from app.services.cloud_uploads import cloud_upload_worker_loop
 from app.web.routes import router as web_router
+from app.services.site_settings import bind_profile, template_profile
+from scripts.maintenance_protocol import current_version
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -55,7 +58,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title=settings.app_name,
-        version="0.1.0",
+        version=current_version(),
+        dependencies=[Depends(bind_profile)],
         debug=settings.debug,
         lifespan=lifespan,
         docs_url="/api/docs" if settings.app_env != "production" else None,
@@ -76,7 +80,8 @@ def create_app() -> FastAPI:
         https_only=settings.session_https_only,
     )
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-    templates = Jinja2Templates(directory=BASE_DIR / "templates")
+    app.state.config = settings
+    templates = Jinja2Templates(directory=BASE_DIR / "templates", context_processors=[template_profile])
 
     def _dtformat(value: datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
         if not value:
@@ -98,6 +103,8 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        if settings.app_env == "production" and (request.url.path == "/admin/uploads" or request.url.path.startswith("/admin/uploads/")):
+            return HTMLResponse("此入口已停用，请通过桌面软件上传并同步网站。", status_code=404)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
@@ -119,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(organizer_router)
     app.include_router(admin_router)
+    app.include_router(settings_router)
     app.include_router(web_router)
     return app
 

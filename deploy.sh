@@ -13,15 +13,20 @@ usage() {
 }
 case "$ACTION" in
   -h|--help|help) usage; exit 0 ;;
-  deploy|update|backup|restore|status|logs|check|password) ;;
+  deploy|update|backup|restore|status|logs|check|password|maintenance|maintenance-backup|maintenance-deploy) ;;
   *) usage; exit 1 ;;
 esac
 [[ $(uname -s) == Linux ]] || die "正式部署入口只能在 Linux 上运行；本地开发无需运行。"
 cd "$ROOT"
 command -v flock >/dev/null || die "缺少 flock，请安装 util-linux。"
 # 同一目录禁止并发部署/备份/恢复，避免数据卷快照交叉。
-exec 9>"$ROOT/.deploy.lock"
-flock -n 9 || die "已有部署或备份操作正在进行，请稍后重试。"
+if [[ ${EBOOK_DEPLOY_LOCK_FD:-} == 9 && -e /proc/self/fd/9 && $(readlink /proc/self/fd/9) == "$ROOT/.deploy.lock" ]]; then
+  : # 维护子进程继承父进程已持有的同一把锁。
+else
+  exec 9>"$ROOT/.deploy.lock"
+  flock -n 9 || die "已有部署或备份操作正在进行，请稍后重试。"
+fi
+export EBOOK_DEPLOY_LOCK_FD=9
 
 if ! command -v docker >/dev/null; then
   [[ "$ACTION" == deploy ]] || die "尚未安装 Docker，请先运行 sudo bash deploy.sh。"
@@ -82,19 +87,25 @@ backup() (
 deploy() {
   echo "正在构建网站；不会导入演示资源或读取本地开发数据库。"
   compose build --pull web
+  python3 -m scripts.server_maintenance prepare
   compose pull db caddy
   compose run --rm -T --no-deps --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
   # 只要已有数据库容器，就先备份。没有备份成功不执行新迁移。
-  if [[ -n $(compose ps -a -q db) ]]; then
+  if [[ "$ACTION" != maintenance-deploy && -n $(compose ps -a -q db) ]]; then
     backup true
   fi
   compose up -d --wait --wait-timeout 360 db web
   compose exec -T web python -m scripts.init_production
   compose up -d --wait --wait-timeout 120 caddy
+  if [[ "$ACTION" == maintenance-deploy ]]; then
+    # 维护服务仍阻止外部写入，由它完成带验证凭据的公网检查并决定开放或恢复。
+    return 0
+  fi
   domain=$(python3 "$ROOT/scripts/server_config.py" domain --config "$CONFIG")
   echo "容器已启动。正在核验 https://$domain 的有效证书和网站响应……"
   if python3 "$ROOT/scripts/server_smoke.py" "https://$domain"; then
     echo "部署完成。网站：https://$domain  管理后台：https://$domain/admin/login"
+    python3 -m scripts.server_maintenance install
   else
     echo "应用已启动，但公网 HTTPS 验证未通过，不能算部署完成。" >&2
     echo "请检查域名解析、80/443端口和 Caddy 日志：sudo bash deploy.sh logs" >&2
@@ -111,9 +122,14 @@ case "$ACTION" in
     "${SITE_GIT[@]}" pull --ff-only
     # 使用更新后的入口，释放本进程锁；deploy 会在迁移前再次做快照。
     flock -u 9
+    exec 9>&-
+    unset EBOOK_DEPLOY_LOCK_FD
     exec bash "$ROOT/deploy.sh" deploy
     ;;
   backup) backup false ;;
+  maintenance-backup) backup true ;;
+  maintenance-deploy) deploy ;;
+  maintenance) python3 -m scripts.server_maintenance run ;;
   restore)
     [[ $# -eq 2 ]] || die "请指定一个由 backup 命令产生的完整备份目录。"
     snapshot=$(realpath -e -- "$2")

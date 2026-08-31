@@ -45,6 +45,8 @@ services:
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?首次管理员密码未配置}
       ORGANIZER_SITE_ID: ${ORGANIZER_SITE_ID:?网站编号未配置}
       ORGANIZER_COVER_HOSTS: ${ORGANIZER_COVER_HOSTS:-}
+      SITE_ALIASES: ${SITE_ALIASES:-}
+      MAINTENANCE_CONTROL_ROOT: /app/control
       IMPORT_MAX_ROWS: "20000"
       IMPORT_MAX_BYTES: "20971520"
       LINK_CHECK_AUTOMATIC_ENABLED: ${LINK_CHECK_AUTOMATIC_ENABLED:-false}
@@ -56,6 +58,8 @@ services:
     volumes:
       - app_runtime:/app/runtime
       - cover_data:/app/app/static/covers
+      - ./control/requests:/app/control/requests
+      - ./control/status:/app/control/status:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=5)"]
       interval: 10s
@@ -76,6 +80,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./domains:/etc/caddy/domains:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

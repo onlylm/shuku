@@ -60,6 +60,8 @@ class Category(TimestampMixin, Base):
 
 class Resource(TimestampMixin, Base):
     __tablename__ = "resources"
+    # ID 用作永久公开地址；SQLite 删除最大编号后也不得把该编号分给新书。
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     resource_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
@@ -77,13 +79,16 @@ class Resource(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     cover_image: Mapped[str | None] = mapped_column(String(500))
     formats: Mapped[str | None] = mapped_column(String(120))
-    copyright_status: Mapped[str] = mapped_column(String(30), default="authorized", index=True)
+    copyright_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     source_reference: Mapped[str | None] = mapped_column(String(500))
     publish_status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
     seo_title: Mapped[str | None] = mapped_column(String(255))
     seo_description: Mapped[str | None] = mapped_column(String(500))
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    metadata_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    source_category_main: Mapped[str | None] = mapped_column(String(100))
+    source_category_sub: Mapped[str | None] = mapped_column(String(100))
 
     categories: Mapped[list[Category]] = relationship(
         secondary=resource_categories, back_populates="resources"
@@ -346,3 +351,20 @@ class OrganizerBatch(TimestampMixin, Base):
     payload: Mapped[dict] = mapped_column(JSON)
     preview: Mapped[list] = mapped_column(JSON)
     receipt: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CategoryMapping(TimestampMixin, Base):
+    __tablename__ = "category_mappings"
+    __table_args__ = (UniqueConstraint("source_main", "source_sub", name="uq_category_mapping_source"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_main: Mapped[str] = mapped_column(String(100))
+    source_sub: Mapped[str] = mapped_column(String(100), default="")
+    target_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="RESTRICT"))
+    target: Mapped[Category] = relationship()
+
+
+class CategoryRedirect(Base):
+    """保留合并前分类及旧网址，不删除历史分类记录。"""
+    __tablename__ = "category_redirects"
+    source_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="RESTRICT"), primary_key=True)
+    target_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="RESTRICT"))

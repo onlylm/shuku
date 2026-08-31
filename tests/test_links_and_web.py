@@ -30,6 +30,8 @@ def _make_link(
             "formats": formats,
             "publish_status": "published",
             "copyright_status": "authorized",
+            "source_reference": "合成测试授权说明",
+            "category_ids": [1],
         },
     )
     channel = ResourceChannel(resource=resource, provider=provider, status="active")
@@ -120,14 +122,16 @@ def test_due_monitor_checks_pending_links(db_session):
 
 def test_frontend_only_shows_valid_links(client, db_session):
     resource, link = _make_link(db_session)
-    detail = client.get(f"/book/{resource.slug}")
+    detail = client.get(f"/book/id/{resource.id}")
     assert detail.status_code == 200
     assert "百度网盘" in detail.text
     link.is_visible = False
     link.status = "invalid"
     db_session.commit()
-    hidden = client.get(f"/book/{resource.slug}")
-    assert hidden.status_code == 404
+    hidden = client.get(f"/book/id/{resource.id}")
+    assert hidden.status_code == 200
+    assert "网盘入口暂不可用" in hidden.text
+    assert f'/go/{link.id}' not in hidden.text
 
 
 def test_frontend_hides_missing_metadata_placeholders(client, db_session):
@@ -140,7 +144,7 @@ def test_frontend_hides_missing_metadata_placeholders(client, db_session):
         author=None,
         formats=None,
     )
-    detail = client.get(f"/book/{resource.slug}")
+    detail = client.get(f"/book/id/{resource.id}")
     visible_text = BeautifulSoup(detail.text, "html.parser").get_text(" ", strip=True)
     assert detail.status_code == 200
     assert "待补充" not in visible_text
@@ -186,9 +190,10 @@ def test_zero_result_search_is_recorded(client, db_session):
 
 
 def test_seo_endpoints(client, db_session):
-    _make_link(db_session)
+    resource, _ = _make_link(db_session)
     assert client.get("/robots.txt").status_code == 200
     sitemap = client.get("/sitemap.xml")
     assert sitemap.status_code == 200
     assert "<urlset" in sitemap.text
-    assert "/book/可见测试书" in sitemap.text
+    assert f"/book/id/{resource.id}" in sitemap.text
+    assert "/book/可见测试书" not in sitemap.text

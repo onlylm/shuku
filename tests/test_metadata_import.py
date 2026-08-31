@@ -23,6 +23,7 @@ def test_split_categories_supports_multiple_separators():
 
 
 def test_meta_preview_matches_by_isbn_and_fills_fields(db_session):
+    db_session.add(Category(name="文学小说", slug="literature")); db_session.commit()
     resource = _seed_resource(db_session, "月亮与六便士", "毛姆", "9787020065512")
     payload = (
         "书名,ISBN,出版社,出版年份,分类\n"
@@ -38,7 +39,7 @@ def test_meta_preview_matches_by_isbn_and_fills_fields(db_session):
 
     result = commit_meta_preview(db_session, batch, {row.id})
     assert result.updated == 1
-    assert result.created_categories == 1
+    assert result.created_categories == 0
 
     db_session.expire_all()
     stored = db_session.get(Resource, resource.id)
@@ -47,7 +48,7 @@ def test_meta_preview_matches_by_isbn_and_fills_fields(db_session):
     assert [category.name for category in stored.categories] == ["文学小说"]
 
 
-def test_meta_preview_reuses_existing_and_creates_missing_categories(db_session):
+def test_meta_preview_never_creates_unmapped_categories(db_session):
     resource = _seed_resource(db_session, "被讨厌的勇气", "岸见一郎")
     payload = (
         "书名,作者,分类\n被讨厌的勇气,岸见一郎,\"心理学、成长、编程开发\"\n"
@@ -56,16 +57,17 @@ def test_meta_preview_reuses_existing_and_creates_missing_categories(db_session)
 
     row = batch.rows[0]
     plans = row.parsed_data["categories"]
-    assert [plan["name"] for plan in plans] == ["心理学", "成长", "编程开发"]
-    assert [plan["action"] for plan in plans] == ["created", "created", "existing"]
+    assert plans == []
+    assert row.row_status == "warning"
+    assert row.parsed_data["category_error"]
 
     result = commit_meta_preview(db_session, batch, {row.id})
-    assert result.created_categories == 2
+    assert result.created_categories == 0
 
     db_session.expire_all()
     stored = db_session.get(Resource, resource.id)
-    assert {category.name for category in stored.categories} == {"心理学", "成长", "编程开发"}
-    assert db_session.scalar(select(Category).where(Category.name == "心理学")) is not None
+    assert stored.categories == []
+    assert db_session.scalar(select(Category).where(Category.name == "心理学")) is None
 
 
 def test_meta_commit_keeps_existing_values_by_default(db_session):
@@ -125,11 +127,14 @@ def test_meta_preview_matches_filename_with_author_suffix(db_session):
     batch = create_meta_preview(db_session, "meta.csv", payload, 1)
 
     row = batch.rows[0]
-    assert row.row_status == "ready"
+    assert row.row_status == "warning"
     assert row.parsed_data["match"]["type"] == "filename"
 
 
 def test_meta_preview_builds_two_level_categories(db_session):
+    parent = Category(name="心理学", slug="psychology")
+    db_session.add(parent); db_session.flush()
+    db_session.add(Category(name="心理自助", slug="psychology-help", parent_id=parent.id)); db_session.commit()
     resource = create_resource(db_session, {"title": "被讨厌的勇气", "author": "岸见一郎"})
     payload = "书名,作者,主分类,子类\n被讨厌的勇气,岸见一郎,心理学,心理自助\n".encode("utf-8-sig")
     batch = create_meta_preview(db_session, "meta.csv", payload, 1)

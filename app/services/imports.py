@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.providers import registry, url_hash
 from app.services.resources import create_resource
+from app.services.category_governance import resolve_categories
 from app.services.text import clean_isbn, normalize_title
 
 
@@ -168,16 +169,18 @@ def commit_preview(db: Session, batch: ImportBatch, selected_row_ids: set[int]) 
                     "description": data.get("description"),
                     "language": data.get("language") or "zh-CN",
                     "formats": data.get("formats"),
-                    "copyright_status": data.get("copyright_status") or "authorized",
+                    "copyright_status": data.get("copyright_status") or "pending",
                     "source_reference": data.get("source_reference"),
-                    "publish_status": "published",
+                    "publish_status": "draft",
                 },
             )
             category_name = data.get("category")
             if category_name:
-                category = db.scalar(select(Category).where(Category.name == category_name))
-                if category:
-                    resource.categories.append(category)
+                resource.source_category_main = category_name
+                try:
+                    resource.categories = resolve_categories(db, category_name)
+                except ValueError as exc:
+                    row.message = str(exc)
         provider = db.scalar(select(Provider).where(Provider.code == data["provider_code"]))
         channel = db.scalar(
             select(ResourceChannel).where(

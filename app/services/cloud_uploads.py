@@ -27,6 +27,7 @@ from app.models import BackgroundTask, Provider, Resource, ResourceChannel, Reso
 from app.models.base import utcnow
 from app.services.links import DuplicateLinkError, add_or_replace_link, check_link
 from app.services.resources import create_resource
+from app.services.publication import apply_publication_gate
 from app.services.text import normalize_title
 
 
@@ -226,7 +227,7 @@ def queue_upload_tasks(
                     "title": title,
                     "author": author,
                     "formats": path.suffix.lstrip(".").upper(),
-                    "copyright_status": "authorized",
+                    "copyright_status": "pending",
                     "publish_status": "draft",
                 },
             )
@@ -541,7 +542,14 @@ class QuarkCloudConnector:
         except subprocess.TimeoutExpired as exc:
             raise CloudConnectorError("夸克网盘操作超时，可稍后重试，已上传部分会保留断点") from exc
         output = "\n".join(part for part in (process.stdout, process.stderr) if part)
-        return _result_event(output)
+        try:
+            return _result_event(output)
+        except CloudConnectorError as exc:
+            # 不记录命令参数、原始输出或凭据；保留退出码和操作名供定位。
+            operation = arguments[0] if arguments else 'unknown'
+            if operation not in {'upload', 'share', 'create-folder', 'login', 'get-user-info', 'unauthorize', 'list', 'ls', 'list-folders', 'get-folder-list'}:
+                operation = 'unknown'
+            raise type(exc)(f"{operation}（退出码 {process.returncode}）：{exc}") from exc
 
     def login(self) -> dict[str, Any]:
         return self._run(["login"], timeout=120)
@@ -795,9 +803,9 @@ def _finish_upload_task(db: Session, task: BackgroundTask, outcome: UploadOutcom
         check_link(db, link)
     except Exception as exc:  # 检测失败不能抹掉已经生成的官方分享链接
         link.last_error = _safe_error_text(exc)
-    if task.payload.get("publish_after_upload") and link.status == "active":
+    if task.payload.get("publish_after_upload") and link.status == "active" and resource.publish_status != "archived":
         resource.publish_status = "published"
-        resource.published_at = resource.published_at or utcnow()
+    publication_problems = apply_publication_gate(resource)
     task.status = "completed"
     task.result = {
         "provider_code": outcome.provider_code,
@@ -807,6 +815,8 @@ def _finish_upload_task(db: Session, task: BackgroundTask, outcome: UploadOutcom
         "remote_path": outcome.remote_path,
         "link_id": link.id,
         "link_status": link.status,
+        "publish_status": resource.publish_status,
+        "publication_issues": publication_problems,
     }
     task.error_message = None
     if outcome.provider_code == "quark":

@@ -39,11 +39,16 @@ jobs:
       - name: Build and check MySQL migrations
         run: |
           docker compose --env-file deploy/.env -f deploy/compose.yml build web
+          sudo python3 -m scripts.server_maintenance prepare
           docker compose --env-file deploy/.env -f deploy/compose.yml up -d --wait --wait-timeout 360 db web
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -m scripts.init_production
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready').status == 200"
           docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Check restricted maintenance configuration
+        run: |
+          python3 -c 'from scripts.server_maintenance import HostMaintenance; w=HostMaintenance(); assert w.control.exists(); assert w.domains.exists()'
+          docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -c "from pathlib import Path; assert Path('/app/control/requests').is_dir(); assert not Path('/var/run/docker.sock').exists()"
       - name: Verify private configuration is not in image
         run: |
           docker compose --env-file deploy/.env -f deploy/compose.yml exec -T web python -c "from pathlib import Path; assert not Path('/app/.env').exists(); assert not Path('/app/deploy/.env').exists(); assert not Path('/app/local.db').exists()"

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     quark_skill_config_url: str = "https://open-api-drive.quark.cn/agent/v1/skill_config"
     organizer_site_id: str = "jingye-local"
     organizer_cover_hosts: str = ""
+    site_aliases: str = ""
+    maintenance_control_root: Path | None = None
     organizer_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
 
     @field_validator("app_env")

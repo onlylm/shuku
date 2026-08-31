@@ -25,7 +25,7 @@
     <div class="import-toolbar">
       <div>
         <strong>确认待补全的行</strong>
-        <p class="hint">绿色默认勾选；黄色是相似度匹配，请人工判断后手动勾选；未匹配的行需要先在资源管理里建立该书。</p>
+        <p class="hint">绿色默认勾选；黄色是需要检查的匹配或分类，请人工判断后手动勾选；未匹配的行需要先在资源管理里建立该书。</p>
       </div>
       {% if pending %}<button class="btn btn-primary">补全已勾选行</button>{% endif %}
     </div>
@@ -39,8 +39,7 @@
       <label class="option-item">
         <span>分类处理</span>
         <select name="category_mode">
-          <option value="append" selected>追加到现有分类</option>
-          <option value="replace">替换成表格里的分类</option>
+          <option value="replace" selected>替换为已确认的网站分类路径</option>
         </select>
       </label>
     </div>
@@ -118,7 +117,7 @@
 
     {% if pending %}
     <div class="import-footer">
-      <p>提交后图书字段立即更新；新建的分类会同步出现在分类管理和前台导航里。</p>
+      <p>提交后更新资料并保护人工确认的结果；未映射分类不会自动新建。映射有变、资料已保护或预检过期时，请重新预检。</p>
       <button class="btn btn-primary">补全已勾选行</button>
     </div>
     {% endif %}

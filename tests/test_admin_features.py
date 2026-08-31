@@ -149,6 +149,8 @@ def test_draft_has_clear_publish_and_delete_actions(admin_client, db_session):
             "copyright_status": "authorized",
             "publish_status": "draft",
             "submit_action": "publish",
+            "source_reference": "合成测试授权说明",
+            "category_ids": "1",
         },
         follow_redirects=False,
     )

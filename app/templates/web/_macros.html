@@ -1,6 +1,6 @@
 {% macro book_card(card) -%}
 {% set r = card.resource %}
-<a class="book-card" href="{{ url_for('resource_detail', slug=r.slug) }}">
+<a class="book-card" href="{{ url_for('resource_detail', resource_id=r.id) }}">
   {% if r.cover_image %}
   <div class="cover cover-image"><img src="{{ r.cover_image }}" alt="《{{ r.title }}》封面" loading="lazy"></div>
   {% else %}
@@ -8,6 +8,6 @@
     <span class="cover-kicker">{{ resource_type_label(r.resource_type) }}</span><strong class="cover-title">{{ r.title }}</strong>{% if r.author %}<span class="cover-author">{{ r.author }}</span>{% endif %}
   </div>
   {% endif %}
-  <div class="book-meta"><span class="book-type">{{ r.formats or '电子书' }}</span><h3>{{ r.title }}</h3><p>{% if r.author %}{{ r.author }} · {% endif %}{{ card.link_count }} 个可用入口</p></div>
+  <div class="book-meta"><span class="book-type">{{ r.formats or '电子书' }}</span><h3>{{ r.title }}</h3><p>{% if r.author %}{{ r.author }} · {% endif %}{{ (card.link_count ~ ' 个可用入口') if card.link_count else '入口待更新' }}</p></div>
 </a>
 {%- endmacro %}

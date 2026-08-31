@@ -4,15 +4,16 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models import Category, ChannelShareLink, FriendLink, Provider, Resource, ResourceChannel
+from app.models import Category, CategoryRedirect, ChannelShareLink, FriendLink, Provider, Resource, ResourceChannel
+from app.services.category_governance import canonical_category
 from app.services.links import record_click, visible_redirect_link
 from app.services.pagination import pagination_context
-from app.services.resources import get_visible_links, visible_resource_query
+from app.services.resources import get_visible_links, resource_public_url, visible_resource_query
 from app.services.search import search_and_record
 from app.services.stats import site_stats
 
@@ -168,10 +169,17 @@ def category_detail(
 ):
     category = db.scalar(
         select(Category)
-        .where(Category.slug == slug, Category.is_visible.is_(True))
+        .where(Category.slug == slug)
         .options(selectinload(Category.parent), selectinload(Category.children))
     )
     if not category:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    if db.get(CategoryRedirect, category.id):
+        target = canonical_category(db, category)
+        if not target.is_visible:
+            raise HTTPException(status_code=404, detail="分类不存在")
+        return RedirectResponse(str(request.url_for("category_detail", slug=target.slug)) + (f"?page={page}" if page > 1 else ""), status_code=301)
+    if not category.is_visible:
         raise HTTPException(status_code=404, detail="分类不存在")
     statement = (
         visible_resource_query()
@@ -232,30 +240,50 @@ def disclaimer(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/book/{slug}", name="resource_detail")
-def resource_detail(slug: str, request: Request, db: Session = Depends(get_db)):
+@router.head("/book/id/{resource_id:int}", name="resource_detail_head", include_in_schema=False)
+@router.get("/book/id/{resource_id:int}", name="resource_detail")
+def resource_detail(resource_id: int, request: Request, db: Session = Depends(get_db)):
+    if not 0 < resource_id <= 2**63 - 1:
+        raise HTTPException(status_code=404, detail="资源不存在")
     resource = db.scalar(
         select(Resource)
-        .where(Resource.slug == slug, Resource.publish_status == "published")
+        .where(Resource.id == resource_id, Resource.publish_status == "published")
         .options(selectinload(Resource.categories))
     )
     if not resource:
         raise HTTPException(status_code=404, detail="资源不存在")
+    path = request.url_for("resource_detail", resource_id=resource.id).path
+    if request.url.path != path:
+        # /book/id/0001 等写法只保留一个规范地址。
+        return RedirectResponse(path, status_code=301)
     links = get_visible_links(db, resource.id)
-    if not links:
-        raise HTTPException(status_code=404, detail="资源入口暂不可用")
-    resource.view_count += 1
-    db.commit()
-    return _templates(request).TemplateResponse(
+    if request.method == "GET":
+        # 旧址跳转、HEAD 检测不计浏览量；浏览不改变内容更新时间。
+        db.execute(update(Resource).where(Resource.id == resource.id).values(view_count=Resource.view_count + 1, updated_at=Resource.updated_at))
+        db.commit()
+    response = _templates(request).TemplateResponse(
         request=request,
         name="web/book.html",
         context=_page_context(
             db,
             resource=resource,
             links=links,
-            canonical=str(request.url_for("resource_detail", slug=slug)),
+            canonical=resource_public_url(resource.id),
         ),
     )
+    if request.method == "HEAD":
+        response.body = b""
+    return response
+
+
+@router.api_route("/book/{slug}", methods=["GET", "HEAD"], name="legacy_resource_detail", include_in_schema=False)
+def legacy_resource_detail(slug: str, request: Request, db: Session = Depends(get_db)):
+    # 即使 slug 是纯数字，也只按旧书名别名查找，不把它解释成图书 ID。
+    resource_id = db.scalar(select(Resource.id).where(Resource.slug == slug, Resource.publish_status == "published"))
+    if resource_id is None:
+        raise HTTPException(status_code=404, detail="资源不存在")
+    path = request.url_for("resource_detail", resource_id=resource_id).path
+    return RedirectResponse(path, status_code=301)
 
 
 @router.get("/go/{link_id}", name="go_link")
@@ -297,6 +325,6 @@ def sitemap(db: Session = Depends(get_db)):
         f"<url><loc>{base}/disclaimer</loc></url>",
     ]
     urls.extend(f"<url><loc>{base}/category/{item.slug}</loc></url>" for item in categories)
-    urls.extend(f"<url><loc>{base}/book/{item.slug}</loc></url>" for item in resources)
+    urls.extend(f"<url><loc>{resource_public_url(item.id)}</loc></url>" for item in resources)
     body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">" + "".join(urls) + "</urlset>"
     return Response(body, media_type="application/xml")

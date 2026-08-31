@@ -9,6 +9,8 @@ htmlcov/
 !.env.example
 !*.env.example
 deploy/.env
+deploy/control/
+deploy/domains/
 backups/
 .deploy.lock
 .study/
@@ -43,6 +45,9 @@ screenshots/
 /docs/后续开发与上线总计划.md
 /docs/本地整理软件验收报告.md
 /docs/桌面整理软件技术文档.md
+/docs/桌面V8批量整理说明.md
+/docs/桌面V8.1书名分类说明.md
+/docs/桌面V9简介书单说明.md
 .mypy_cache/
 .ruff_cache/
 dist/

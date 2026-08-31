@@ -9,26 +9,28 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import Category, ImportBatch, ImportRawRow, Resource
+from app.models import Category, ImportBatch, ImportRawRow, OrganizerIdentity, Resource
 from app.models.base import utcnow
 from app.services.imports import parse_upload
-from app.services.text import clean_isbn, normalize_title, slugify
+from app.services.text import clean_isbn, normalize_title
+from app.services.category_governance import resolve_categories
+from app.services.organizer_sync import fingerprint
+from app.services.publication import apply_publication_gate
 
 
 """元数据补全导入。
 
 用途：云盘批量上传只会按文件名建立草稿资源（只有书名、作者、格式），
 ISBN、出版社、出版年、简介、分类这些完整的书目数据通常另有一份表格。
-本模块把表格按「ISBN → 书名+作者 → 书名精确 → 书名模糊」的顺序映射回
-已有的资源，补齐空缺字段，并自动处理分类：
-
-* 表格里写了分类，系统里没有 → 自动新建分类
-* 表格里写了分类，系统里已有 → 直接复用（支持同义模糊复用）
-* 一本书适合多个分类 → 单元格里用 、,，/|;； 任一分隔符隔开即可
+优先按系统编号映射；有编号时不回退到书名。无编号时保留人工确认的传统匹配。
+分类仅精确匹配网站目录或显式来源映射，不自动创建或模糊合并。
+预检后有改动或资料已锁定时拒绝覆盖。
 """
 
 
 META_HEADERS = {
+    "系统编号": "book_id",
+    "book_id": "book_id",
     # ---------- 标识 ----------
     "isbn": "isbn",
     "ISBN": "isbn",
@@ -117,7 +119,6 @@ FILLABLE_FIELDS = ("subtitle", "author", "translator", "publisher", "publish_yea
 CATEGORY_SPLIT = re.compile(r"[、,，/／|｜;；]+|\s{2,}")
 
 TITLE_FUZZY_THRESHOLD = 92
-CATEGORY_FUZZY_THRESHOLD = 90
 MIN_ISBN_LENGTH = 8
 
 # 云盘上传按「书名 - 作者.epub」拆出资源标题，这里做同一套反解，才能对上
@@ -216,16 +217,6 @@ def _plan_to_dict(plan: CategoryPlan) -> dict[str, Any]:
     }
 
 
-def unique_category_slug(db: Session, name: str) -> str:
-    base = slugify(name)[:100] or "category"
-    candidate = base
-    index = 2
-    while db.scalar(select(Category.id).where(Category.slug == candidate)):
-        candidate = f"{base}-{index}"
-        index += 1
-    return candidate
-
-
 def _load_resources(db: Session) -> tuple[dict[str, Resource], dict[str, Resource], dict[tuple[str, str], Resource], dict[str, list[Resource]]]:
     resources = list(db.scalars(select(Resource)))
     by_isbn: dict[str, Resource] = {}
@@ -269,6 +260,9 @@ def match_resource(
     values: dict[str, Any],
     indexes: tuple[dict[str, Resource], dict[str, Resource], dict[tuple[str, str], Resource], dict[str, list[Resource]]],
 ) -> tuple[Resource | None, str, int | None]:
+    if values.get("book_id"):
+        identity = db.get(OrganizerIdentity, str(values["book_id"]).strip())
+        return (db.get(Resource, identity.resource_id), "book_id", None) if identity else (None, "none", None)
     by_isbn, by_title, by_title_author, buckets = indexes
     isbn = clean_isbn(values.get("isbn"))
     title = normalize_title(str(values.get("title") or ""))
@@ -286,9 +280,11 @@ def match_resource(
 
     # 1. ISBN 最可靠
     if isbn and len(isbn) >= MIN_ISBN_LENGTH:
-        hit = by_isbn.get(isbn)
-        if hit:
-            return hit, "isbn", None
+        hits = list(db.scalars(select(Resource).where(Resource.isbn == isbn).limit(2)))
+        if len(hits) > 1:
+            return None, "none", None
+        if hits:
+            return hits[0], "isbn", None
     # 2. 文件名反解（云盘上传就是按文件名建的，命中率最高）
     hit = by_pair(file_title, file_author)
     if hit:
@@ -315,6 +311,7 @@ def match_resource(
 
 
 MATCH_LABELS = {
+    "book_id": "按系统编号精确匹配",
     "isbn": "按 ISBN 精确匹配",
     "filename": "按文件名匹配",
     "title_author": "按书名 + 作者匹配",
@@ -324,91 +321,24 @@ MATCH_LABELS = {
 }
 
 
-def _resolve_one(
-    name: str,
-    parent_name: str | None,
-    level: int,
-    cache: dict[str, CategoryPlan],
-    by_name: dict[str, Category],
-    by_slug: dict[str, Category],
-) -> CategoryPlan:
-    key = f"{parent_name or ''}/{name}"
-    cached = cache.get(key)
-    if cached:
-        return cached
-
-    parent_plan = cache.get(f"/{parent_name}") if parent_name else None
-    matches = [category for category in by_name.values() if category.name == name]
-    if parent_plan and parent_plan.category_id and len(matches) > 1:
-        narrowed = [item for item in matches if item.parent_id == parent_plan.category_id]
-        if narrowed:
-            matches = narrowed
-    existing = matches[0] if matches else None
-    if existing is None:
-        existing = by_slug.get(slugify(name))
-    if existing:
-        plan = CategoryPlan(
-            name=name,
-            action="existing",
-            target=existing.name,
-            category_id=existing.id,
-            parent=parent_name,
-            parent_id=existing.parent_id,
-            level=level,
-        )
-    else:
-        best: Category | None = None
-        best_score = 0
-        for category in by_name.values():
-            score = fuzz.ratio(name, category.name)
-            if score > best_score:
-                best, best_score = category, score
-        if best and best_score >= CATEGORY_FUZZY_THRESHOLD:
-            plan = CategoryPlan(
-                name=name,
-                action="matched",
-                target=best.name,
-                category_id=best.id,
-                parent=parent_name,
-                parent_id=best.parent_id,
-                level=level,
-            )
-        else:
-            plan = CategoryPlan(
-                name=name,
-                action="created",
-                target=name,
-                parent=parent_name,
-                parent_id=parent_plan.category_id if parent_plan else None,
-                level=level,
-            )
-    cache[key] = plan
-    return plan
-
-
 def _resolve_categories(
     db: Session,
     values: dict[str, Any],
-    cache: dict[str, CategoryPlan],
-    by_name: dict[str, Category],
-    by_slug: dict[str, Category],
 ) -> list[CategoryPlan]:
-    """支持三种写法：单列多值「分类」、两列层级「主分类 + 子类」，或两者同时给。"""
-    plans: list[CategoryPlan] = []
+    """禁止模糊复用或自动新建；保持一条一级/二级路径。"""
     primary = str(values.get("primary_category") or "").strip()
     sub = str(values.get("sub_category") or "").strip()
-
-    def push(plan: CategoryPlan) -> None:
-        if plan not in plans:
-            plans.append(plan)
-
-    if primary:
-        push(_resolve_one(primary, None, 1, cache, by_name, by_slug))
-    if sub:
-        push(_resolve_one(sub, primary or None, 2, cache, by_name, by_slug))
-    for name in split_categories(str(values.get("categories") or "")):
-        push(_resolve_one(name, None, 1, cache, by_name, by_slug))
-    return plans
+    if not primary:
+        names = split_categories(str(values.get("categories") or ""))
+        if len(names) > 1:
+            raise ValueError("多个分类不能自动判断主次，请使用主分类 + 子类或保存明确映射")
+        primary = names[0] if names else ""
+    if not primary and not sub:
+        return []
+    path = resolve_categories(db, primary, sub)
+    return [CategoryPlan(name=c.name, action="existing", target=c.name, category_id=c.id,
+                         parent=path[0].name if i else None, parent_id=c.parent_id, level=i + 1)
+            for i, c in enumerate(path)]
 
 
 def _normalize_values(values: dict[str, Any]) -> None:
@@ -465,7 +395,7 @@ def create_meta_preview(db: Session, filename: str, content: bytes, admin_id: in
 
     headers_seen = {_canonical_meta_header(key) for row in rows for key in row}
     headers_seen.discard(None)
-    if "title" not in headers_seen and "isbn" not in headers_seen:
+    if not {"title", "isbn", "book_id"} & headers_seen:
         raise ValueError("表格至少需要「书名」或「ISBN」其中一列，否则无法匹配已有资源")
 
     batch = ImportBatch(
@@ -478,10 +408,6 @@ def create_meta_preview(db: Session, filename: str, content: bytes, admin_id: in
     db.flush()
 
     indexes = _load_resources(db)
-    categories = list(db.scalars(select(Category)))
-    by_name = {category.name: category for category in categories}
-    by_slug = {category.slug: category for category in categories}
-    category_cache: dict[str, CategoryPlan] = {}
 
     for number, raw in enumerate(rows, start=2):
         values = {_canonical_meta_header(key): _cell(value) for key, value in raw.items()}
@@ -491,7 +417,7 @@ def create_meta_preview(db: Session, filename: str, content: bytes, admin_id: in
         isbn = clean_isbn(values.get("isbn"))
         resource, match_type, score = match_resource(db, values, indexes)
 
-        if not title and not isbn:
+        if not title and not isbn and not values.get("book_id"):
             db.add(
                 ImportRawRow(
                     batch_id=batch.id,
@@ -519,7 +445,11 @@ def create_meta_preview(db: Session, filename: str, content: bytes, admin_id: in
             continue
 
         fill = _build_fill_plan(resource, values, overwrite=False)
-        category_plans = _resolve_categories(db, values, category_cache, by_name, by_slug)
+        category_error = None
+        try:
+            category_plans = _resolve_categories(db, values)
+        except ValueError as exc:
+            category_plans, category_error = [], str(exc)
         existing_names = {category.name for category in resource.categories}
         pending_categories = [plan for plan in category_plans if plan.target not in existing_names]
 
@@ -537,11 +467,19 @@ def create_meta_preview(db: Session, filename: str, content: bytes, admin_id: in
             message += f"；补齐 {len(fill)} 个字段"
         if pending_categories:
             message += f"；分类 {len(pending_categories)} 个"
+        if category_error:
+            status = "warning"
+            message += "；" + category_error
+        if resource.metadata_locked:
+            status = "error"
+            message = "网站资料已保护，请先在资源编辑页解除保护，或直接在网页修正"
 
         parsed = {
             "values": values,
             "fill": fill,
             "categories": [_plan_to_dict(plan) for plan in category_plans],
+            "category_error": category_error,
+            "fingerprint": fingerprint(resource),
             "match": {
                 "type": match_type,
                 "score": score,
@@ -579,13 +517,12 @@ def commit_meta_preview(
     selected_row_ids: set[int],
     *,
     overwrite: bool = False,
-    category_mode: str = "append",
+    category_mode: str = "replace",
 ) -> MetaCommitResult:
     if batch.status not in {"meta_preview", "meta_partial"}:
         raise ValueError("该批次已经处理，不能重复提交")
     allowed = {"ready", "warning"} | ({"noop"} if overwrite else set())
     result = MetaCommitResult()
-    created_here: set[int] = set()
     for row in batch.rows:
         if row.id not in selected_row_ids or row.row_status not in allowed:
             result.skipped += 1
@@ -597,8 +534,13 @@ def commit_meta_preview(
             result.skipped += 1
             continue
         parsed = row.parsed_data or {}
+        if resource.metadata_locked or parsed.get("fingerprint") != fingerprint(resource):
+            row.row_status = "error"
+            row.message = "预检后网站资料已改变、已保护或预检版本过旧，请重新预检"
+            result.skipped += 1
+            continue
         values = parsed.get("values") or {}
-        fill = _build_fill_plan(resource, values, overwrite=overwrite) if overwrite else (parsed.get("fill") or [])
+        fill = _build_fill_plan(resource, values, overwrite=overwrite)
 
         for item in fill:
             field_name = item["field"]
@@ -610,35 +552,22 @@ def commit_meta_preview(
             else:
                 setattr(resource, field_name, str(value).strip() or None)
 
-        plans = [CategoryPlan(**plan) for plan in (parsed.get("categories") or [])]
-        if plans:
-            if category_mode == "replace":
-                resource.categories = []
-            existing_names = {category.name for category in resource.categories}
-            for plan in plans:
-                category = None
-                if plan.category_id:
-                    category = db.get(Category, plan.category_id)
-                if category is None:
-                    category = db.scalar(select(Category).where(Category.name == plan.name))
-                if category is None:
-                    category = Category(
-                        name=plan.name,
-                        slug=unique_category_slug(db, plan.name),
-                        is_visible=True,
-                    )
-                    db.add(category)
-                    db.flush()
-                    created_here.add(category.id)
-                    result.created_categories += 1
-                # 子类要挂到对应主分类下，已存在的分类不改动它的归属
-                if plan.parent and not category.parent_id and category.id in created_here:
-                    parent = db.scalar(select(Category).where(Category.name == plan.parent))
-                    if parent and parent.id != category.id:
-                        category.parent_id = parent.id
-                if category.name not in existing_names:
-                    resource.categories.append(category)
-                    existing_names.add(category.name)
+        try:
+            plans = _resolve_categories(db, values)
+            current_plan = [_plan_to_dict(p) for p in plans]
+            if current_plan != (parsed.get("categories") or []):
+                raise ValueError("分类映射在预检后改变，未改分类，请重新预检")
+            if plans:
+                resource.categories = [db.get(Category, p.category_id) for p in plans]
+            resource.metadata_locked = True
+        except ValueError as exc:
+            row.message = str(exc)
+            if resource.publish_status == "published":
+                resource.publish_status = "draft"
+        if values.get("primary_category") or values.get("categories"):
+            resource.source_category_main = str(values.get("primary_category") or values.get("categories"))[:100]
+            resource.source_category_sub = str(values.get("sub_category") or "")[:100]
+        apply_publication_gate(resource)
         row.row_status = "committed"
         result.updated += 1
     batch.status = "meta_committed"

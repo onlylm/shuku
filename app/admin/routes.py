@@ -16,12 +16,15 @@ from app.core.security import (
     csrf_token,
     current_admin,
     login_rate_limiter,
+    session_fingerprint,
     verify_csrf,
 )
 from app.models import (
     AdminOperationLog,
     BackgroundTask,
     Category,
+    CategoryMapping,
+    CategoryRedirect,
     ChannelShareLink,
     FriendLink,
     ImportBatch,
@@ -39,6 +42,8 @@ from app.services.metadata_import import MATCH_LABELS, commit_meta_preview, crea
 from app.services.link_monitor import due_link_count
 from app.services.pagination import pagination_context
 from app.services.resources import create_resource, update_resource
+from app.services.publication import publication_issues
+from app.services.category_governance import catalog_audit, merge_categories, merge_preview, save_mapping
 from app.services.stats import dashboard_stats
 from app.services.text import slugify
 from app.services.cloud_uploads import (
@@ -170,13 +175,14 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
         if user:
             request.session.clear()
             request.session["admin_user_id"] = user.id
+            request.session["admin_auth"] = session_fingerprint(user)
             csrf_token(request)
             user.last_login_at = utcnow()
             login_rate_limiter.clear(key)
             db.commit()
-            next_url = str(request.query_params.get("next") or request.url_for("admin_dashboard"))
-            if not next_url.startswith("/") and not next_url.startswith(str(request.base_url)):
-                next_url = str(request.url_for("admin_dashboard"))
+            next_url = str(request.query_params.get("next") or "/admin")
+            if not next_url.startswith("/") or next_url.startswith("//") or "\\" in next_url:
+                next_url = "/admin"
             return RedirectResponse(next_url, status_code=303)
         login_rate_limiter.record_failure(key)
         error = "用户名或密码不正确"
@@ -527,6 +533,7 @@ async def resource_create(request: Request, db: Session = Depends(get_db)):
     verify_csrf(request, str(form.get("csrf_token") or ""))
     data = dict(form)
     data["category_ids"] = form.getlist("category_ids")
+    data["metadata_locked"] = form.get("metadata_locked") == "1"
     if form.get("submit_action") == "publish":
         data["publish_status"] = "published"
     data["cover_image"] = await _handle_cover_upload(form)
@@ -554,8 +561,10 @@ async def resource_create(request: Request, db: Session = Depends(get_db)):
             context=_admin_context(request, db, resource=None, categories=categories, active="resources", error=str(exc), values=data),
             status_code=400,
         )
-    if str(form.get("share_url") or "").strip():
-        _flash(request, "资源和首个网盘链接已保存；检测有效时会自动在前台显示")
+    if data.get("publish_status") == "published" and resource.publish_status != "published":
+        _flash(request, "资料已保存为草稿，未发布：" + "；".join(publication_issues(resource)), "warning")
+    elif str(form.get("share_url") or "").strip():
+        _flash(request, "资源和首个网盘链接已保存；发布状态与链接检测分别管理")
     else:
         _flash(request, "资源已创建；可以继续添加网盘链接")
     return RedirectResponse(request.url_for("admin_resource_edit", resource_id=resource.id), status_code=303)
@@ -590,6 +599,7 @@ def resource_edit(resource_id: int, request: Request, db: Session = Depends(get_
             providers=providers,
             active="resources",
             error=None,
+            publication_issues=publication_issues(resource),
         ),
     )
 
@@ -607,6 +617,7 @@ async def resource_update(resource_id: int, request: Request, db: Session = Depe
     verify_csrf(request, str(form.get("csrf_token") or ""))
     data = dict(form)
     data["category_ids"] = form.getlist("category_ids")
+    data["metadata_locked"] = form.get("metadata_locked") == "1"
     if form.get("submit_action") == "publish":
         data["publish_status"] = "published"
     data["cover_image"] = await _handle_cover_upload(form, resource.cover_image)
@@ -614,7 +625,10 @@ async def resource_update(resource_id: int, request: Request, db: Session = Depe
         update_resource(db, resource, data)
         _audit(db, admin.id, "update", "resource", resource.id, {"title": resource.title})
         db.commit()
-        _flash(request, "资源信息已保存")
+        if data.get("publish_status") == "published" and resource.publish_status != "published":
+            _flash(request, "资料已保存为草稿，未发布：" + "；".join(publication_issues(resource)), "warning")
+        else:
+            _flash(request, "资源信息已保存；书籍网址保持不变")
     except ValueError as exc:
         db.rollback()
         _flash(request, str(exc), "danger")
@@ -1071,7 +1085,7 @@ async def meta_import_commit(batch_id: int, request: Request, db: Session = Depe
         return RedirectResponse(request.url_for("admin_meta_import"), status_code=303)
     selected = {int(value) for value in form.getlist("selected_row") if str(value).isdigit()}
     overwrite = form.get("overwrite") == "1"
-    category_mode = "replace" if form.get("category_mode") == "replace" else "append"
+    category_mode = "replace"
     try:
         result = commit_meta_preview(
             db, batch, selected, overwrite=overwrite, category_mode=category_mode
@@ -1148,7 +1162,7 @@ async def import_commit(batch_id: int, request: Request, db: Session = Depends(g
         result = commit_preview(db, batch, selected)
         _audit(db, admin.id, "commit_import", "import_batch", batch.id, {"committed": result.committed})
         db.commit()
-        _flash(request, f"已导入 {result.committed} 条，跳过 {result.skipped} 条；新链接待检测后才会显示")
+        _flash(request, f"已导入 {result.committed} 条，跳过 {result.skipped} 条；新资源为草稿，请在资源管理核验后发布")
     except ValueError as exc:
         db.rollback()
         _flash(request, str(exc), "danger")
@@ -1177,6 +1191,68 @@ def categories_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/categories/governance", name="admin_category_governance")
+def category_governance_page(request: Request, db: Session = Depends(get_db)):
+    if not current_admin(request, db):
+        return _redirect_login(request)
+    return _templates(request).TemplateResponse(request=request, name="admin/category_governance.html",
+        context=_admin_context(request, db, active="categories", audit=catalog_audit(db),
+            categories=list(db.scalars(select(Category).options(selectinload(Category.parent)).where(Category.is_visible.is_(True)).order_by(Category.parent_id, Category.sort_order, Category.id))),
+            mappings=list(db.scalars(select(CategoryMapping).options(selectinload(CategoryMapping.target)).order_by(CategoryMapping.source_main, CategoryMapping.source_sub)))))
+
+
+@router.post("/categories/mapping", name="admin_category_mapping")
+async def category_mapping_save(request: Request, db: Session = Depends(get_db)):
+    admin = current_admin(request, db)
+    if not admin:
+        return _redirect_login(request)
+    form = await request.form()
+    verify_csrf(request, str(form.get("csrf_token") or ""))
+    try:
+        mapping = save_mapping(db, form.get("source_main"), form.get("source_sub"), _form_int(form.get("target_id")))
+        _audit(db, admin.id, "category_mapping", "category_mapping", mapping.id,
+               {"source_main": mapping.source_main, "source_sub": mapping.source_sub, "target_id": mapping.target_id})
+        db.commit()
+        _flash(request, "映射已保存；已有图书不会悄悄改类，请重新预检同步或编辑待处理图书")
+    except ValueError as exc:
+        db.rollback()
+        _flash(request, str(exc), "danger")
+    return RedirectResponse(request.url_for("admin_category_governance"), status_code=303)
+
+
+@router.post("/categories/merge-preview", name="admin_category_merge_preview")
+async def category_merge_preview(request: Request, db: Session = Depends(get_db)):
+    if not current_admin(request, db):
+        return _redirect_login(request)
+    form = await request.form()
+    verify_csrf(request, str(form.get("csrf_token") or ""))
+    try:
+        preview = merge_preview(db, _form_int(form.get("source_id")), _form_int(form.get("target_id")))
+        return _templates(request).TemplateResponse(request=request, name="admin/category_merge_preview.html",
+            context=_admin_context(request, db, active="categories", preview=preview))
+    except ValueError as exc:
+        _flash(request, str(exc), "danger")
+        return RedirectResponse(request.url_for("admin_category_governance"), status_code=303)
+
+
+@router.post("/categories/merge", name="admin_category_merge")
+async def category_merge_confirm(request: Request, db: Session = Depends(get_db)):
+    admin = current_admin(request, db)
+    if not admin:
+        return _redirect_login(request)
+    form = await request.form()
+    verify_csrf(request, str(form.get("csrf_token") or ""))
+    try:
+        log = merge_categories(db, _form_int(form.get("source_id")), _form_int(form.get("target_id")),
+                               str(form.get("fingerprint") or ""), admin.id)
+        db.commit()
+        _flash(request, f"已合并 {len(log.detail['rows'])} 本图书的分类；旧分类记录及网址已保留，审计编号 {log.id}")
+    except ValueError as exc:
+        db.rollback()
+        _flash(request, str(exc), "danger")
+    return RedirectResponse(request.url_for("admin_category_governance"), status_code=303)
+
+
 @router.post("/categories", name="admin_category_create")
 async def category_create(request: Request, db: Session = Depends(get_db)):
     admin = current_admin(request, db)
@@ -1193,6 +1269,13 @@ async def category_create(request: Request, db: Session = Depends(get_db)):
             _flash(request, "分类别名已存在", "danger")
         else:
             parent_id = _form_int(form.get("parent_id"), 0) or None
+            parent = db.get(Category, parent_id) if parent_id else None
+            if parent_id and (not parent or parent.parent_id is not None or db.get(CategoryRedirect, parent.id)):
+                _flash(request, "上级必须是有效一级分类；网站只维护两级分类", "danger")
+                return RedirectResponse(request.url_for("admin_categories"), status_code=303)
+            if db.scalar(select(Category.id).where(Category.name == name, Category.parent_id == parent_id)):
+                _flash(request, "同一上级下已有同名分类，请复用或先合并", "danger")
+                return RedirectResponse(request.url_for("admin_categories"), status_code=303)
             category = Category(
                 name=name,
                 slug=slug,
@@ -1252,6 +1335,12 @@ async def category_update(category_id: int, request: Request, db: Session = Depe
         _flash(request, "分类名称不能为空", "danger")
     elif db.scalar(select(Category.id).where(Category.slug == slug, Category.id != category.id)):
         _flash(request, "分类网址别名已存在", "danger")
+    elif db.get(CategoryRedirect, category.id):
+        _flash(request, "已合并分类保留作旧网址跳转，请编辑目标分类", "danger")
+    elif db.scalar(select(Category.id).where(Category.name == name, Category.parent_id == parent_id, Category.id != category.id)):
+        _flash(request, "同一上级下已有同名分类，请先合并", "danger")
+    elif parent_id and (not db.get(Category, parent_id) or db.get(Category, parent_id).parent_id is not None or category.children or db.get(CategoryRedirect, parent_id)):
+        _flash(request, "只允许两级分类；有下级的分类不能移为二级", "danger")
     elif not _valid_category_parent(db, category, parent_id):
         _flash(request, "不能把分类移动到自己的下级分类中", "danger")
     else:
@@ -1285,6 +1374,8 @@ async def category_delete(category_id: int, request: Request, db: Session = Depe
         _flash(request, "该分类还有下级分类，请先移动或删除下级分类", "danger")
     elif category.resources:
         _flash(request, "该分类仍有关联资源，请先移动资源；也可以直接隐藏分类", "danger")
+    elif db.scalar(select(CategoryMapping.id).where(CategoryMapping.target_id == category.id)) or db.scalar(select(CategoryRedirect.source_id).where(or_(CategoryRedirect.source_id == category.id, CategoryRedirect.target_id == category.id))):
+        _flash(request, "该分类被来源映射或旧网址引用，不能删除", "danger")
     else:
         _audit(db, admin.id, "delete", "category", category.id, {"name": category.name})
         db.delete(category)
@@ -1301,6 +1392,9 @@ async def category_toggle(category_id: int, request: Request, db: Session = Depe
     form = await request.form()
     verify_csrf(request, str(form.get("csrf_token") or ""))
     category = db.get(Category, category_id)
+    if category and db.get(CategoryRedirect, category.id):
+        _flash(request, "已合并的旧分类不能重新显示，请编辑目标分类", "danger")
+        return RedirectResponse(request.url_for("admin_categories"), status_code=303)
     if category:
         category.is_visible = not category.is_visible
         _audit(db, admin.id, "toggle", "category", category.id, {"is_visible": category.is_visible})

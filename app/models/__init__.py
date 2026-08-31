@@ -1,9 +1,12 @@
 from app.models.base import Base, TimestampMixin, utcnow
+from app.models.site_settings import SiteSetting
 from app.models.entities import (
     AdminOperationLog,
     AdminUser,
     BackgroundTask,
     Category,
+    CategoryMapping,
+    CategoryRedirect,
     ChannelShareLink,
     FriendLink,
     ImportBatch,
@@ -25,12 +28,15 @@ from app.models.entities import (
 
 __all__ = [
     "Base",
+    "SiteSetting",
     "TimestampMixin",
     "utcnow",
     "AdminOperationLog",
     "AdminUser",
     "BackgroundTask",
     "Category",
+    "CategoryMapping",
+    "CategoryRedirect",
     "ChannelShareLink",
     "FriendLink",
     "ImportBatch",

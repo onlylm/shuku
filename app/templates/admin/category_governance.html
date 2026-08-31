@@ -1,0 +1,25 @@
+{% extends "admin/base.html" %}
+{% block title %}分类映射与发布检查{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>分类映射与发布检查</h1><p>来源名称只作映射，不会自动加入网站导航；不确定的分类由你确认。</p></div><a class="btn btn-secondary" href="{{ url_for('admin_categories') }}">返回分类管理</a></div>
+<div class="dashboard-grid">
+<section class="admin-card"><h2>保存来源映射</h2><p>例如：本地“历史文化 / 中国历史”对应网站“历史人文 / 中国史”。留空二级只匹配不带二级的来源，不会吞掉其他子类。</p>
+<form class="form-stack" action="{{ url_for('admin_category_mapping') }}" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+<label class="field"><span>来源一级分类</span><input class="input" name="source_main" required maxlength="100"></label>
+<label class="field"><span>来源二级分类（可空）</span><input class="input" name="source_sub" maxlength="100"></label>
+<label class="field"><span>网站目标分类</span><select class="select" name="target_id" required>{% for c in categories %}<option value="{{ c.id }}">{{ c.parent.name ~ ' / ' if c.parent else '' }}{{ c.name }} #{{ c.id }}</option>{% endfor %}</select></label>
+<button class="btn btn-primary">保存映射</button></form>
+</section>
+<section class="admin-card"><h2>合并重复旧分类</h2><p>先预览，再确认。保留图书和旧分类记录；旧分类网址跳转到目标分类。含下级分类时先逐个处理下级。</p>
+<form class="form-stack" action="{{ url_for('admin_category_merge_preview') }}" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+<label class="field"><span>需要合并的旧分类</span><select class="select" name="source_id" required>{% for c in categories %}<option value="{{ c.id }}">{{ c.parent.name ~ ' / ' if c.parent else '' }}{{ c.name }} #{{ c.id }}</option>{% endfor %}</select></label>
+<label class="field"><span>保留的目标分类</span><select class="select" name="target_id" required>{% for c in categories %}<option value="{{ c.id }}">{{ c.parent.name ~ ' / ' if c.parent else '' }}{{ c.name }} #{{ c.id }}</option>{% endfor %}</select></label>
+<button class="btn btn-secondary">只预览影响，不修改数据</button></form>
+</section></div>
+<section class="admin-card"><h2>已有映射（{{ mappings|length }}）</h2><div class="table-responsive"><table class="recent-table"><thead><tr><th>来源一级 / 二级</th><th>网站目标</th></tr></thead><tbody>{% for m in mappings %}<tr><td>{{ m.source_main }}{{ ' / ' ~ m.source_sub if m.source_sub else '' }}</td><td>{{ m.target.name }} #{{ m.target_id }}</td></tr>{% else %}<tr><td colspan="2">暂无映射；完全同名的有效网站分类可以直接匹配。</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="admin-card"><h2>重名分类（{{ audit.duplicate_categories|length }} 组）</h2>{% for group in audit.duplicate_categories %}<p>{% for c in group %}{{ c.name }} #{{ c.id }}（{{ c.slug }}）{{ '、' if not loop.last }}{% endfor %}</p>{% else %}<p>没有发现同一上级下的同名分类；近义名称仍需人工确认。</p>{% endfor %}</section>
+<section class="admin-card"><h2>待映射图书（{{ audit.pending_categories|length }}）</h2><div class="table-responsive"><table class="recent-table"><thead><tr><th>图书</th><th>来源分类</th></tr></thead><tbody>{% for r in audit.pending_categories[:100] %}<tr><td><a href="{{ url_for('admin_resource_edit', resource_id=r.id) }}">{{ r.title }}</a></td><td>{{ r.main }} / {{ r.sub }}</td></tr>{% else %}<tr><td colspan="2">暂无待映射图书。</td></tr>{% endfor %}</tbody></table></div><p>最多展示前100本；映射保存后，在本地重新预检同步即可应用。</p></section>
+<section class="admin-card"><h2>发布检查（{{ audit.publication_issues|length }} 本需处理）</h2><p>此页仅检查，不会自动下架旧图书。新发布及后续资料更新会执行检查。缺少作者、出版社或简介时请据实补充，不要猜写。</p><div class="table-responsive"><table class="recent-table"><thead><tr><th>图书</th><th>状态</th><th>待处理原因</th></tr></thead><tbody>{% for r in audit.publication_issues[:100] %}<tr><td><a href="{{ url_for('admin_resource_edit', resource_id=r.id) }}">{{ r.title }}</a></td><td>{{ status_label(r.publish_status) }}</td><td>{{ r.issues|join('；') }}</td></tr>{% else %}<tr><td colspan="3">当前检查通过。</td></tr>{% endfor %}</tbody></table></div><p>最多展示前100本。</p></section>
+{% endblock %}

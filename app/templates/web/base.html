@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="{% block description %}收录公版、开放许可与已获授权的图书和教程，提供清晰的网盘获取入口。{% endblock %}">
+  <meta name="description" content="{% block description %}{{ site_profile.description }}{% endblock %}">
   <meta name="robots" content="{{ seo_robots|default('index,follow') }}">
   <title>{% block title %}{{ app_name }}｜找到值得读的那一本{% endblock %}</title>
-  <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ site_profile.favicon or url_for('static', path='/favicon.svg') }}">
   {% if canonical %}<link rel="canonical" href="{{ canonical }}">{% endif %}
   <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
   {% block head %}{% endblock %}
@@ -15,7 +15,7 @@
   <a class="skip-link" href="#main">跳到主要内容</a>
   <header class="site-header">
     <div class="container header-primary">
-      <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">{{ app_name }}</span></a>
+      <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页">{% include '_brand.html' %}</a>
       <form class="header-search" action="{{ url_for('search') }}" method="get" role="search">
         <label class="skip-link" for="header-search">搜索资源</label>
         <input id="header-search" name="q" type="search" value="{{ q|default('') }}" placeholder="搜索书名、作者或 ISBN">
@@ -34,8 +34,9 @@
   <footer class="site-footer">
     <div class="container footer-grid">
       <div class="footer-brand">
-        <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页"><span class="brand-mark"></span><span class="brand-name">{{ app_name }}</span></a>
-        <p>整理公版、开放许可或已取得授权的图书与教程。本站仅提供资源索引，不直接存储第三方分享文件。</p>
+        <a class="brand" href="{{ url_for('home') }}" aria-label="{{ app_name }}首页">{% include '_brand.html' %}</a>
+        <p>{{ site_profile.footer }}</p>
+        {% if site_profile.contact_email %}<p><a href="mailto:{{ site_profile.contact_email }}">联系本站：{{ site_profile.contact_email }}</a></p>{% endif %}
       </div>
       <div class="footer-links">
         <h3>浏览</h3>

@@ -10,8 +10,9 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QLockFile, QSortFilterProxyModel, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase, QKeySequence, QPixmap, QAction, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTableView, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QScrollArea)
+from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase, QKeySequence, QPixmap, QAction, QShortcut, QIcon
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QTableView, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QScrollArea)
+from PySide6.QtWidgets import QInputDialog
 
 from .connections import Credentials, SiteClient, quark_connector, quark_list_folders, upload_book, upload_cover
 from .covers import make_cover
@@ -19,9 +20,12 @@ from .engine import DEFAULT_RULES, export_snapshot, scan
 from .pipeline import run_full_pipeline, format_summary
 from .safeio import Cancelled, Control, bounded_read
 from .workspace import Workspace, now
+from . import batch_edit
+from . import descriptions, booklist
 
 
 STATUS = {"passed": "检测通过", "warning": "有提示", "failed": "异常", "blocked": "已阻止", "confirmed": "已确认", "pending": "待处理", "suggested": "待确认建议", "running": "进行中", "succeeded": "已完成", "cancelled": "已取消", "interrupted": "已中断"}
+STATUS["needs_review"] = "待人工核对"
 
 # 设计语言：柔和浅色表面 + 克制品牌绿 + 语义状态色（成功绿 / 警告橙 / 错误红）。
 # 参考 awesome-design-md 中 Airtable（友好结构化数据、克制主色 CTA）与 Notion（圆角 8px 按钮 / 12px 卡片、胶囊状态徽章、语义状态色）。
@@ -55,7 +59,7 @@ class BookModel(QAbstractTableModel):
         return len(self.headers)
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
+        if not index.isValid() or not 0 <= index.row() < len(self.rows) or not 0 <= index.column() < len(self.headers):
             return None
         book = self.rows[index.row()]
         col = index.column()
@@ -63,15 +67,22 @@ class BookModel(QAbstractTableModel):
             meta = book["metadata"]
             st = book.get("_status", {})
             if col == 7:
-                return "✓" if st.get("cover") else "—"
+                return "已有" if st.get("cover") else "—"
             if col == 8:
-                return "✓" if st.get("netdisk") else "—"
+                return "已分享" if st.get("netdisk") else "—"
             if col == 9:
-                return "✓" if st.get("site") else "—"
-            values = [meta.get("title"), meta.get("author"), meta.get("main_category"), meta.get("subcategory"), meta.get("isbn"),
-                      "已排除" if book["excluded"] else STATUS.get(book["status"], book["status"]),
-                      STATUS.get(meta.get("classification_status"), "待处理"), book["book_id"]]
-            return str(values[col] or "—")
+                return "已同步" if st.get("site") else "—"
+            mapping = {
+                0: meta.get("title"),
+                1: meta.get("author"),
+                2: meta.get("main_category"),
+                3: meta.get("subcategory"),
+                4: meta.get("isbn"),
+                5: "已排除" if book["excluded"] else STATUS.get(book["status"], book["status"]),
+                6: STATUS.get(meta.get("classification_status"), "待处理"),
+                10: book["book_id"],
+            }
+            return str(mapping.get(col) or "—")
         if role == Qt.ForegroundRole and col in (7, 8, 9):
             ok = book.get("_status", {}).get(["cover", "netdisk", "site"][col - 7])
             return QColor(C["success"] if ok else C["muted"])
@@ -92,13 +103,15 @@ class BookModel(QAbstractTableModel):
 class BookFilterProxy(QSortFilterProxyModel):
     def __init__(self):
         super().__init__()
-        self.f = {"cover": "all", "isbn": "all", "author": "all", "category": "", "status": ""}
+        self.f = {"cover": "all", "isbn": "all", "author": "all", "publisher": "all", "category": "", "status": ""}
 
     def set_criteria(self, **kw):
         self.f.update(kw)
         self.invalidateFilter()
 
     def filterAcceptsRow(self, row, parent):
+        if not super().filterAcceptsRow(row, parent):
+            return False
         book = self.sourceModel().rows[row]
         st = book.get("_status", {})
         f = self.f
@@ -106,13 +119,17 @@ class BookFilterProxy(QSortFilterProxyModel):
             return False
         if f["cover"] == "no" and st.get("cover"):
             return False
-        if f["isbn"] == "yes" and not (book["metadata"].get("isbn") or "").strip():
+        if f["isbn"] == "yes" and not str(book["metadata"].get("isbn") or "").strip():
             return False
-        if f["isbn"] == "no" and (book["metadata"].get("isbn") or "").strip():
+        if f["isbn"] == "no" and str(book["metadata"].get("isbn") or "").strip():
             return False
-        if f["author"] == "yes" and not (book["metadata"].get("author") or "").strip():
+        if f["author"] == "yes" and not str(book["metadata"].get("author") or "").strip():
             return False
-        if f["author"] == "no" and (book["metadata"].get("author") or "").strip():
+        if f["author"] == "no" and str(book["metadata"].get("author") or "").strip():
+            return False
+        if f["publisher"] == "yes" and not str(book["metadata"].get("publisher") or "").strip():
+            return False
+        if f["publisher"] == "no" and str(book["metadata"].get("publisher") or "").strip():
             return False
         if f["category"] and book["metadata"].get("main_category") != f["category"]:
             return False
@@ -126,6 +143,10 @@ class BookFilterProxy(QSortFilterProxyModel):
             return False
         if f["status"] == "pending" and (st.get("netdisk") or st.get("site")):
             return False
+        if f['status'] == 'needs_review' and book['metadata'].get('classification_status') == 'confirmed': return False
+        if f['status'] == 'needs_rights' and book['metadata'].get('rights_review_status') == 'confirmed': return False
+        if f['status'] == 'no_description' and str(book['metadata'].get('description') or '').strip(): return False
+        if f['status'] == 'has_description' and not str(book['metadata'].get('description') or '').strip(): return False
         return True
 
 
@@ -144,7 +165,7 @@ class Worker(QThread):
         except Cancelled as exc:
             self.failure.emit(str(exc))
         except Exception as exc:
-            self.failure.emit(str(exc) if isinstance(exc, ValueError) else f"操作未完成：{type(exc).__name__}。请核对配置、权限及网络后重试。")
+            self.failure.emit(batch_edit.error_message(exc))
 
 
 class MainWindow(QMainWindow):
@@ -161,7 +182,9 @@ class MainWindow(QMainWindow):
         self.preview = None
         self.current_id = None
         self._elapsed = 0
-        self.setWindowTitle("电子书整理工作台")
+        self.setWindowTitle("电子书整理工作台 0.4.2（资料补提取版）")
+        icon_path = Path(__file__).resolve().parent / 'assets' / 'ebook-logo.png'
+        if icon_path.exists(): self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1500, 920)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -183,7 +206,9 @@ class MainWindow(QMainWindow):
             QPushButton.alternate:hover {{background:{C['surface_soft']};}}
             QLineEdit,QTextEdit,QComboBox,QTableView {{background:white;border:1px solid {C['border']};border-radius:8px;padding:5px;}}
             QHeaderView::section {{background:{C['surface_soft']};padding:9px;border:0;border-bottom:2px solid {C['hairline']};color:{C['body']};}}
-            QTableView::item {{padding:6px;border-bottom:1px solid {C['hairline']};}} QTableView::item:selected {{background:{C['surface_alt']};color:{C['ink']};}}
+            QTableView::item {{padding:6px;border-bottom:1px solid {C['hairline']};}}
+            QTableView::item:selected, QTableView::item:selected:!active {{background:#a6dfbd;color:#103e29;border-bottom:1px solid #278456;}}
+            QCheckBox::indicator {{width:20px;height:20px;}}
             QLabel {{color:{C['body']};}} QLabel.title {{font-size:15px;font-weight:600;color:{C['ink']};}}
             QProgressBar {{border:0;border-radius:8px;background:{C['surface_soft']};height:18px;text-align:center;color:{C['ink']};}}
             QProgressBar::chunk {{background:{C['primary']};border-radius:8px;}}
@@ -210,32 +235,51 @@ class MainWindow(QMainWindow):
         self.model = BookModel()
         self.proxy = BookFilterProxy(); self.proxy.setSourceModel(self.model)
         self.proxy.setFilterKeyColumn(-1); self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        file_bar = QHBoxLayout()
+        self.button("选择书库并扫描", self.choose_scan, file_bar)
+        self.button("继续上次扫描", self.resume_scan, file_bar, "alternate")
+        self.button("导出选中图书", self.export_selected, file_bar, "alternate")
+        self.del_button = self.button("删除选中图书", self.delete_selected, file_bar, "error")
+        file_bar.addStretch(); layout.addLayout(file_bar)
         # 筛选栏
         filter_bar = QHBoxLayout()
         self.search = QLineEdit(); self.search.setPlaceholderText("搜索书名 / 作者 / 分类 / ISBN")
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
+        self.search.textChanged.connect(lambda *_: self.update_count())
         filter_bar.addWidget(self.search, 2)
         self.f_cover = QComboBox(); self.f_cover.addItems(["封面:全部", "封面:有", "封面:无"])
         self.f_isbn = QComboBox(); self.f_isbn.addItems(["ISBN:全部", "ISBN:有", "ISBN:无"])
         self.f_author = QComboBox(); self.f_author.addItems(["作者:全部", "作者:有", "作者:无"])
+        self.f_publisher = QComboBox(); self.f_publisher.addItems(["出版社:全部", "出版社:有", "出版社:无"])
         self.f_category = QComboBox(); self.f_category.addItem("分类:全部")
-        self.f_status = QComboBox(); self.f_status.addItems(["状态:全部", "状态:已传网盘", "状态:已同步网站", "状态:已排除", "状态:异常", "状态:待处理"])
-        for w, key in ((self.f_cover, "cover"), (self.f_isbn, "isbn"), (self.f_author, "author")):
+        self.f_status = QComboBox(); self.f_status.addItems(["状态:全部", "状态:已传网盘", "状态:已同步网站", "状态:已排除", "状态:异常", "状态:待处理", "状态:待核对分类", "状态:待确认版权", "状态:缺少简介", "状态:已有简介"])
+        for w, key in ((self.f_cover, "cover"), (self.f_isbn, "isbn"), (self.f_author, "author"), (self.f_publisher, "publisher")):
             w.currentIndexChanged.connect(lambda *_: self._apply_filters())
         self.f_category.currentTextChanged.connect(lambda *_: self._apply_filters())
         self.f_status.currentTextChanged.connect(lambda *_: self._apply_filters())
-        for w in (self.f_cover, self.f_isbn, self.f_author, self.f_category, self.f_status):
+        for w in (self.f_cover, self.f_isbn, self.f_author, self.f_publisher, self.f_category, self.f_status):
             filter_bar.addWidget(w)
         layout.addLayout(filter_bar)
         # 批量操作栏
         batch_bar = QHBoxLayout()
         self.button("全选筛选结果", self.select_all_filtered, batch_bar, "alternate")
-        self.button("一键上传选中(全自动)", lambda: self.start_pipeline(False, self.selected_ids()), batch_bar)
+        self.button("上传选中/筛选(全自动)", lambda: self.upload_selected_or_filtered(False), batch_bar)
         self.button("一键上传全部已筛选(全自动)", lambda: self.start_pipeline(False, self.all_filtered_ids()), batch_bar)
         self.button("导入表格回填资料", self.import_table, batch_bar, "alternate")
         self.button("导出已上传清单", self.export_uploaded, batch_bar, "alternate")
-        self.del_button = self.button("删除选中", self.delete_selected, batch_bar, "error")
         layout.addLayout(batch_bar)
+        organize_bar = QHBoxLayout()
+        self.button('批量精简书名 / 去副标题', self.edit_titles, organize_bar, 'alternate')
+        self.button('批量分类（可逐本调整）', self.edit_categories, organize_bar, 'alternate')
+        self.button('批量版权 / 语言', self.bulk_edit, organize_bar, 'alternate')
+        self.button('导出改名文件（保留原书）', self.export_renamed, organize_bar, 'alternate')
+        self.button('撤销上一批资料修改', self.undo_batch, organize_bar, 'alternate')
+        layout.addLayout(organize_bar)
+        info_bar = QHBoxLayout()
+        self.button('批量补提取作者 / 出版社 / 简介', self.extract_descriptions, info_bar, 'alternate')
+        self.button('一键导出书单 CSV', self.export_booklist, info_bar, 'alternate')
+        self.button('导出 AI 补全模板', self.export_ai_template, info_bar, 'alternate')
+        layout.addLayout(info_bar)
         splitter = QSplitter(); layout.addWidget(splitter, 1)
         self.table = QTableView(); self.table.setModel(self.proxy)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -247,9 +291,11 @@ class MainWindow(QMainWindow):
             if column:
                 self.table.setColumnWidth(column, width)
         self.table.selectionModel().selectionChanged.connect(self.show_selected)
+        self.table.selectionModel().selectionChanged.connect(lambda *_: self.update_count())
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_table_context_menu)
-        QShortcut(QKeySequence.Delete, self.table, activated=self.delete_selected)
+        self.delete_shortcut = QShortcut(QKeySequence.Delete, self.table, activated=self.delete_selected)
+        self.delete_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         splitter.addWidget(self.table)
         detail = QWidget(); detail_layout = QVBoxLayout(detail)
         self.cover = QLabel("封面预览"); self.cover.setAlignment(Qt.AlignCenter); self.cover.setMinimumHeight(190)
@@ -261,18 +307,22 @@ class MainWindow(QMainWindow):
         form.addRow("分类建议", self.category_suggestions)
         suggestion_button = QPushButton("填入选中的分类建议"); suggestion_button.clicked.connect(self.apply_suggestion)
         self.actions.append(suggestion_button); form.addRow("", suggestion_button)
+        confirm_category = QPushButton('人工核对无误：确认本书分类')
+        confirm_category.clicked.connect(self.confirm_category)
+        self.actions.append(confirm_category); form.addRow('', confirm_category)
         self.rights = QComboBox()
         for title, code in [("尚未确认", ""), ("已获授权", "authorized"), ("公版", "public_domain"), ("开放许可", "open_license")]:
             self.rights.addItem(title, code)
         form.addRow("版权状态", self.rights); detail_layout.addLayout(form)
-        self.description = QTextEdit(); self.description.setPlaceholderText("图书简介"); self.description.setMaximumHeight(100)
+        self.description = QTextEdit(); self.description.setPlaceholderText("图书简介"); self.description.setMinimumHeight(140)
         detail_layout.addWidget(self.description)
         editbar = QHBoxLayout()
         self.button("保存此书", self.save_book, editbar)
         self.button("撤销上次修改", self.undo_book, editbar)
         self.button("选择封面", self.select_cover, editbar)
         detail_layout.addLayout(editbar)
-        self.button("将分类和授权应用到选中图书", self.bulk_edit, detail_layout)
+        self.button("批量编辑 / 标题清理（先预览）", self.bulk_edit, detail_layout)
+        self.button("撤销上次整批修改", self.undo_batch, detail_layout, "alternate")
         self.details = QTextEdit(); self.details.setReadOnly(True); self.details.setMaximumHeight(120)
         detail_layout.addWidget(self.details)
         detail_scroll = QScrollArea(); detail_scroll.setWidgetResizable(True); detail_scroll.setWidget(detail)
@@ -291,10 +341,15 @@ class MainWindow(QMainWindow):
     def build_tasks(self):
         page = QWidget(); layout = QVBoxLayout(page)
         bar = QHBoxLayout()
-        pause = QPushButton("暂停 / 继续"); pause.clicked.connect(self.pause)
-        cancel = QPushButton("取消当前任务"); cancel.clicked.connect(self.cancel)
+        controls = QHBoxLayout()
+        self.pause_button = QPushButton("暂停 / 继续"); self.pause_button.clicked.connect(self.pause)
+        self.cancel_button = QPushButton("取消当前任务"); self.cancel_button.clicked.connect(self.cancel)
+        controls.addWidget(self.pause_button); controls.addWidget(self.cancel_button); controls.addStretch()
+        self.pause_button.setEnabled(False); self.cancel_button.setEnabled(False)
+        layout.addLayout(controls)
         self.button("刷新任务和异常", self.reload_tasks, bar, "alternate")
         self.button("重试上次云端任务", self.retry_cloud, bar, "alternate")
+        self.button("继续上次流水线", self.retry_pipeline, bar, "alternate")
         self.button("备份工作区资料", self.backup, bar, "alternate")
         self.button("恢复到新工作区", self.restore_backup, bar, "alternate")
         self.button("打开工作区", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.ws.root))), bar, "alternate")
@@ -310,7 +365,10 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar(); self.progress_bar.setRange(0, 0)
         pl.addWidget(self.progress_bar)
         layout.addWidget(prog)
-        self.progress_log = QTextEdit(); self.progress_log.setReadOnly(True); layout.addWidget(self.progress_log, 1)
+        self.progress_log = QTextEdit(); self.progress_log.setReadOnly(True)
+        # 防止数千本任务把所有历史行永久保存在富文本控件中。
+        self.progress_log.document().setMaximumBlockCount(600)
+        layout.addWidget(self.progress_log, 1)
         self.task_history = QTextEdit(); self.task_history.setReadOnly(True); layout.addWidget(self.task_history, 1)
         self.tabs.addTab(page, "任务与异常")
         self.timer = QTimer(); self.timer.timeout.connect(self._tick)
@@ -372,8 +430,8 @@ class MainWindow(QMainWindow):
 
     def build_pipeline(self):
         page = QWidget(); layout = QVBoxLayout(page)
-        info = QLabel("全自动流水线：对选中的书（或全书），依次跑「分类自动确认 → 版权批量申报 → 封面上 R2 → 传网盘(夸克) → 同步网站」。\n"
-                      "已完成的书自动跳过（断点续传）；未过闸门的书记入“待处理”队列，不会中断流程。进度与结果见“任务与异常”页签。\n"
+        info = QLabel("上传流水线：核对分类和来源 → 封面上 R2 → 传夸克或百度 → 同步网站；发布需要单独勾选。\n"
+                      "分类与版权默认由你确认；资料不齐、同名候选和未发布结果会明确列出。已有分享复用，改过的资料重新同步。\n"
                       "在「书库整理」页用筛选器挑好资料齐全的书，点「一键上传选中 / 全部已筛选」即可。")
         info.setWordWrap(True); layout.addWidget(info)
         form = QFormLayout()
@@ -382,12 +440,13 @@ class MainWindow(QMainWindow):
         self.pipeline_rights = QComboBox()
         for title, code in [("已获授权 (authorized)", "authorized"), ("公版 (public_domain)", "public_domain"), ("开放许可 (open_license)", "open_license")]:
             self.pipeline_rights.addItem(title, code)
-        form.addRow("版权默认状态", self.pipeline_rights)
-        self.pipeline_source = QLineEdit("自有/已购电子书资源"); form.addRow("来源说明（批量申报用）", self.pipeline_source)
-        self.pipeline_auto_class = QCheckBox("自动确认有候选的分类（关键词命中即确认）"); self.pipeline_auto_class.setChecked(True); form.addRow(self.pipeline_auto_class)
-        self.pipeline_auto_rights = QCheckBox("对未确认的书批量申报上述版权策略"); self.pipeline_auto_rights.setChecked(True); form.addRow(self.pipeline_auto_rights)
+        form.addRow("本批版权类别（仅勾选确认时应用）", self.pipeline_rights)
+        self.pipeline_source = QLineEdit(); self.pipeline_source.setPlaceholderText("填写已核对的授权或来源，不自动代填"); form.addRow("来源说明（批量确认用）", self.pipeline_source)
+        self.pipeline_auto_class = QCheckBox("生成关键词分类建议（需人工确认，不直接上传）"); form.addRow(self.pipeline_auto_class)
+        self.pipeline_auto_rights = QCheckBox("我已核对授权，允许将上述版权和来源用于本批"); form.addRow(self.pipeline_auto_rights)
         self.pipeline_publish = QCheckBox("同步时链接校验通过后自动发布"); form.addRow(self.pipeline_publish)
-        self.pipeline_force = QCheckBox("忽略已完成标记，强制重做（用于补封面/改元数据）"); form.addRow(self.pipeline_force)
+        self.pipeline_force = QCheckBox("重新校验封面并同步网站（不会重复上传已有分享的书）"); form.addRow(self.pipeline_force)
+        self.pipeline_overwrite = QCheckBox("明确覆盖网站的非空资料（默认仅补空）"); form.addRow(self.pipeline_overwrite)
         self.pipeline_batch = QSpinBox(); self.pipeline_batch.setRange(1, 500); self.pipeline_batch.setValue(20); form.addRow("网站每批本数", self.pipeline_batch)
         self.pipeline_limit = QSpinBox(); self.pipeline_limit.setRange(0, 100000); self.pipeline_limit.setValue(0); self.pipeline_limit.setSpecialValueText("全部"); form.addRow("本数限制（0=全部，冒烟用）", self.pipeline_limit)
         layout.addLayout(form)
@@ -395,18 +454,26 @@ class MainWindow(QMainWindow):
         self.button("▶ 开始全自动流水线（全书）", lambda: self.start_pipeline(False), bar)
         self.button("仅预演 (dry-run)", lambda: self.start_pipeline(True), bar, "alternate")
         layout.addLayout(bar)
-        layout.addWidget(QLabel("大量书会跑很久，可随时在“任务与异常”页签暂停/取消；已完成的不会重做。运行前请确认“连接与分类设置”里的 R2 与网站同步授权已配置。"))
+        layout.addWidget(QLabel("任务中心可暂停/取消，完成当前网络请求后在检查点停下；继续时复用已确认的分享。\n请先配置连接并用少量图书验证。重新同步默认仅补空，更新已有资料需明确勾选覆盖。"))
         self.tabs.addTab(page, "全自动流水线")
 
-    def start_pipeline(self, dry, book_ids=None):
+    def start_pipeline(self, dry, book_ids=None, resume=None):
+        if book_ids is not None and not book_ids:
+            QMessageBox.information(self, "没有可处理的书", "当前选择或筛选结果为空，未执行全书操作。")
+            return
         config = self.config()
         opts = dict(provider=self.pipeline_provider.currentData(), publish=self.pipeline_publish.isChecked(),
                     auto_classify=self.pipeline_auto_class.isChecked(), auto_rights=self.pipeline_auto_rights.isChecked(),
-                    rights_status=self.pipeline_rights.currentData(), source_reference=self.pipeline_source.text().strip() or "自有/已购电子书资源",
-                    dry_run=dry, batch=self.pipeline_batch.value(), limit=self.pipeline_limit.value(), force=self.pipeline_force.isChecked())
-        if book_ids:
+                    rights_status=self.pipeline_rights.currentData(), source_reference=self.pipeline_source.text().strip(),
+                    dry_run=dry, batch=self.pipeline_batch.value(), limit=self.pipeline_limit.value(), force=self.pipeline_force.isChecked(), overwrite=self.pipeline_overwrite.isChecked())
+        if resume is not None:
+            opts = {**resume, "dry_run": dry}
+        if book_ids is not None:
             opts["book_ids"] = book_ids
-        scope = f"（选中 {len(book_ids)} 本）" if book_ids else "（全书）"
+        if opts.get("auto_rights") and not opts.get("source_reference"):
+            self.show_error("请填写批量版权确认的真实来源说明，或取消批量版权确认。")
+            return
+        scope = f"（明确选择 {len(book_ids)} 本）" if book_ids is not None else "（全书）"
         if not dry and not self.ask("确认真实全自动上传" + scope, "将按上述设置对" + scope + "执行：分类确认、版权申报、封面上 R2、传网盘、同步网站。只处理你确认拥有使用权限的资源。是否继续？"):
             return
 
@@ -417,8 +484,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "全自动流水线完成", format_summary(summary))
         self.start("全自动流水线" + scope + ("（预演）" if dry else ""), work, done)
 
+    def retry_pipeline(self):
+        saved = self.ws.setting("last_pipeline_task")
+        if not saved:
+            self.show_error("没有可继续的流水线任务")
+            return
+        self.start_pipeline(False, saved.get("book_ids", []), resume=saved)
+
     def selected_ids(self):
         return [self.model.rows[self.proxy.mapToSource(index).row()]["book_id"] for index in self.table.selectionModel().selectedRows()]
+
+    def upload_selected_or_filtered(self, dry):
+        ids = self.selected_ids() or self.all_filtered_ids()
+        if not ids:
+            QMessageBox.information(self, "没有可上传的书", "请先选中书库中的行，或用筛选器筛选后再上传。")
+            return
+        self.start_pipeline(dry, ids)
 
     def all_filtered_ids(self):
         ids = []
@@ -435,15 +516,21 @@ class MainWindow(QMainWindow):
             cover={"封面:全部": "all", "封面:有": "yes", "封面:无": "no"}[self.f_cover.currentText()],
             isbn={"ISBN:全部": "all", "ISBN:有": "yes", "ISBN:无": "no"}[self.f_isbn.currentText()],
             author={"作者:全部": "all", "作者:有": "yes", "作者:无": "no"}[self.f_author.currentText()],
+            publisher={"出版社:全部": "all", "出版社:有": "yes", "出版社:无": "no"}[self.f_publisher.currentText()],
             category="" if self.f_category.currentText() == "分类:全部" else self.f_category.currentText(),
-            status={"状态:全部": "", "状态:已传网盘": "netdisk", "状态:已同步网站": "site", "状态:已排除": "excluded", "状态:异常": "failed", "状态:待处理": "pending"}[self.f_status.currentText()],
+            status={"状态:全部": "", "状态:已传网盘": "netdisk", "状态:已同步网站": "site", "状态:已排除": "excluded", "状态:异常": "failed", "状态:待处理": "pending", "状态:待核对分类":"needs_review", "状态:待确认版权":"needs_rights", "状态:缺少简介":"no_description", "状态:已有简介":"has_description"}[self.f_status.currentText()],
         )
+        self.update_count()
 
     def require_ids(self):
         ids = self.selected_ids()
         if not ids:
             QMessageBox.information(self, "请选择图书", "请在书库列表选择一行或多行。")
         return ids
+
+    def update_count(self):
+        if hasattr(self, "count_label"):
+            self.count_label.setText(f"书库 {len(self.model.rows)} 本｜筛选后 {self.proxy.rowCount()} 本｜已选中 {len(self.selected_ids())} 本｜Ctrl / Shift 多选；删除不删除原文件")
 
     def ask(self, title, message):
         return QMessageBox.question(self, title, message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
@@ -452,30 +539,43 @@ class MainWindow(QMainWindow):
         self.progress_log.append("⚠ " + error)
         QMessageBox.warning(self, "操作提示", error)
 
-    def start(self, label, function, done=None):
+    def start(self, label, function, done=None, refresh=True):
         if self.worker and self.worker.isRunning():
             QMessageBox.information(self, "任务进行中", "请等待当前任务完成，或在任务中心暂停/取消。")
             return
         self.progress_log.append("\n▶ " + label)
         for action in self.actions:
             action.setEnabled(False)
+        self.table.setEnabled(False)
+        self.pause_button.setEnabled(True); self.cancel_button.setEnabled(True)
         self.task_status.setText(label); self._elapsed = 0; self.elapsed_label.setText("已运行 0s")
         self.progress_bar.setRange(0, 0); self.timer.start(1000)
         self.worker = Worker(function)
+        self._refresh_after_task = refresh
         self.worker.progress.connect(self.progress_log.append)
         self.worker.progress.connect(self.statusBar().showMessage)
         self.worker.failure.connect(self.show_error)
-        self.worker.success.connect(done or (lambda result: self.progress_log.append("完成：" + str(result))))
-        self.worker.finished.connect(self.finished)
+        self._task_succeeded = False
+        def remember(result):
+            self._task_succeeded = True
+            self._task_result = result
+        self.worker.success.connect(remember)
+        self.worker.finished.connect(lambda: self.finished(done))
         self.worker.start()
 
-    def finished(self):
+    def finished(self, done=None):
         self.timer.stop(); self.progress_bar.setRange(0, 1); self.progress_bar.setValue(1)
         self.task_status.setText("空闲")
         for action in self.actions:
             action.setEnabled(True)
-        self.reload(); self.reload_tasks()
+        self.table.setEnabled(True)
+        self.pause_button.setEnabled(False); self.cancel_button.setEnabled(False)
+        if getattr(self, '_refresh_after_task', True):
+            self.reload()
+        self.reload_tasks()
         self.statusBar().showMessage("任务结束；可在任务中心查看结果。原文件未修改。")
+        if self._task_succeeded:
+            (done or (lambda result: self.progress_log.append("完成：" + str(result))))(self._task_result)
 
     def _tick(self):
         self._elapsed += 1
@@ -494,15 +594,19 @@ class MainWindow(QMainWindow):
             self.progress_log.append("已请求取消；不删除已完成的文件或远程内容")
 
     def reload(self):
-        selected = self.selected_ids()
+        selected = set(self.selected_ids())
         site_id = self.config().get("site_id", "")
         rows = self.ws.books(issues_only=False)
+        # 一次读取全部状态，避免几千本书逐条打开数据库导致刷新/删除后长时间卡顿。
+        with self.ws.connect() as db:
+            results = {(r["book_id"], r["target"]): json.loads(r["data"]) for r in db.execute("SELECT book_id,target,data FROM results")}
         cats = set()
         for b in rows:
             st = {
                 "cover": bool(b.get("cover_path")),
-                "netdisk": bool((self.ws.result(b["book_id"], "quark") or {}).get("share_url")),
-                "site": (self.ws.result(b["book_id"], "site:" + site_id) or {}).get("status") == "ok",
+                "netdisk": any(results.get((b["book_id"], provider), {}).get("share_url") for provider in ("quark", "baidu")),
+                "site": (results.get((b["book_id"], "site:" + site_id), {}).get("status") == "ok"
+                         and results.get((b["book_id"], "site:" + site_id), {}).get("revision") == b["revision"]),
             }
             b["_status"] = st
             if b["metadata"].get("main_category"):
@@ -517,12 +621,19 @@ class MainWindow(QMainWindow):
         if cur in [self.f_category.itemText(i) for i in range(self.f_category.count())]:
             self.f_category.setCurrentText(cur)
         self.f_category.blockSignals(False)
+        self._apply_filters()
         if selected:
             from PySide6.QtCore import QItemSelectionModel
+            selection_model = self.table.selectionModel()
+            selection_model.blockSignals(True)
+            self.table.setUpdatesEnabled(False)
             for index, book in enumerate(self.model.rows):
                 if book["book_id"] in selected:
-                    self.table.selectionModel().select(self.proxy.mapFromSource(self.model.index(index, 0)), QItemSelectionModel.Select | QItemSelectionModel.Rows)
-        self.count_label.setText(f"当前 {len(rows)} 本唯一内容　｜　筛选后 {self.proxy.rowCount()} 本　｜　按住 Ctrl / Shift 可多选；重复扫描按内容识别，不按书名合并")
+                    selection_model.select(self.proxy.mapFromSource(self.model.index(index, 0)), QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            self.table.setUpdatesEnabled(True)
+            selection_model.blockSignals(False)
+            self.show_selected(); self.update_count()
+        self.update_count()
 
     def reload_tasks(self):
         with self.ws.connect() as db:
@@ -540,11 +651,20 @@ class MainWindow(QMainWindow):
         ids = self.selected_ids()
         if not ids:
             self.current_id = None
+            for field in self.fields.values():
+                field.clear()
+            self.description.clear(); self.details.clear(); self.cover.clear()
+            self.cover.setText("请选择图书")
+            self.category_suggestions.clear(); self.rights.setCurrentIndex(0)
             return
         self.current_id = ids[0]
-        book = self.ws.book(ids[0]); meta = book["metadata"]
+        book = self.ws.book(ids[0])
+        if not book:
+            self.current_id = None
+            return
+        meta = book["metadata"]
         for key, field in self.fields.items():
-            field.setText(str(meta.get(key) or ""))
+            field.setText(batch_edit.language_label(meta.get(key)) if key == "language" else str(meta.get(key) or ""))
         self.description.setPlainText(meta.get("description") or "")
         self.rights.setCurrentIndex(max(0, self.rights.findData(meta.get("copyright_status", ""))))
         self.category_suggestions.clear()
@@ -555,7 +675,11 @@ class MainWindow(QMainWindow):
             self.cover.setPixmap(picture.scaled(130, 190, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             self.cover.clear(); self.cover.setText("缺少封面，可点击“选择封面”")
-        st = book.get("_status", {})
+        r2 = self.ws.result(book["book_id"], "r2")
+        receipt = self.ws.result(book["book_id"], "site:" + self.config().get("site_id", ""))
+        st = {"cover": r2.get("state") == "verified" and r2.get("version") == book["cover_version"],
+              "netdisk": any(self.ws.result(book["book_id"], provider).get("share_url") for provider in ("quark", "baidu")),
+              "site": receipt.get("status") == "ok" and receipt.get("revision") == book["revision"]}
         self.details.setPlainText(json.dumps({
             "编号": book["book_id"], "字段来源": book["provenance"],
             "封面已传R2": st.get("cover"), "已传网盘": st.get("netdisk"), "已同步网站": st.get("site"),
@@ -568,11 +692,17 @@ class MainWindow(QMainWindow):
         if not self.current_id:
             return
         changes = {key: field.text().strip() for key, field in self.fields.items()}
+        changes['language'] = batch_edit.normalize_language(changes.get('language'))
         year = changes.get("publish_year")
         if year and (not year.isdigit() or not 1 <= int(year) <= 9999):
             self.show_error("出版年份应为有效整数，不确定时可以留空"); return
         changes["publish_year"] = int(year) if year else None
-        changes.update(description=self.description.toPlainText(), copyright_status=self.rights.currentData(), rights_review_status="confirmed" if self.rights.currentData() and changes["source_reference"] else "pending", classification_status="confirmed" if changes["main_category"] else "pending")
+        previous = self.ws.book(self.current_id)['metadata']
+        category_changed = any(changes[k] != previous.get(k, '') for k in ('main_category', 'subcategory'))
+        classification = ("confirmed" if changes["main_category"] else "pending") if category_changed else previous.get('classification_status', 'pending')
+        changes.update(description=self.description.toPlainText(), copyright_status=self.rights.currentData(), rights_review_status="confirmed" if self.rights.currentData() and changes["source_reference"] else "pending", classification_status=classification)
+        if changes['description'] != previous.get('description', ''):
+            changes['description_source'] = '人工编辑'
         if not changes["title"]:
             self.show_error("书名不能为空"); return
         try:
@@ -587,14 +717,343 @@ class MainWindow(QMainWindow):
             self.fields["subcategory"].clear()
             self.statusBar().showMessage("分类建议已填入，核对后点击保存，或批量应用到选中图书。")
 
+    def confirm_category(self):
+        if not self.current_id: return
+        main=self.fields['main_category'].text().strip()
+        if not main: self.show_error('请先填写主分类'); return
+        if self.ask('人工确认分类','确认本书的主分类和子分类正确？这不是ISBN自动核验。'):
+            self.ws.edit(self.current_id,{'main_category':main,'subcategory':self.fields['subcategory'].text().strip(),'classification_status':'confirmed'})
+            self.reload()
+
     def bulk_edit(self):
-        ids = self.require_ids()
-        if not ids or not self.ask("确认批量修改", "将右侧分类及版权/来源应用到选中的所有图书？请确保这些图书的授权范围一致。"):
-            return
-        main = self.fields["main_category"].text().strip(); source = self.fields["source_reference"].text().strip()
-        for book_id in ids:
-            self.ws.edit(book_id, {"main_category": main, "subcategory": self.fields["subcategory"].text().strip(), "classification_status": "confirmed" if main else "pending", "copyright_status": self.rights.currentData(), "source_reference": source, "rights_review_status": "confirmed" if self.rights.currentData() and source else "pending"})
-        self.reload()
+        dialog = QDialog(self); dialog.setWindowTitle('批量编辑：只改勾选字段'); dialog.resize(650, 550)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel('原文件、云端文件不变；空值也会应用，请核对。版权与分类独立修改。'))
+        scope = QComboBox(); scope.addItem(f'当前选中：{len(self.selected_ids())} 本', 'selected'); scope.addItem(f'全部筛选结果：{len(self.all_filtered_ids())} 本', 'filtered'); layout.addWidget(scope)
+        form=QFormLayout(); layout.addLayout(form); controls={}
+        for key,label in [('copyright_status','版权状态'),('source_reference','授权 / 来源说明'),('language','语言'),('main_category','主分类'),('subcategory','子分类')]:
+            check=QCheckBox(label)
+            if key=='copyright_status':
+                edit=QComboBox()
+                for name,value in [('尚未确认',''),('已获授权','authorized'),('公版','public_domain'),('开放许可','open_license')]: edit.addItem(name,value)
+            else:
+                edit=QLineEdit('中文' if key=='language' else '')
+            edit.setEnabled(False); check.toggled.connect(edit.setEnabled); form.addRow(check,edit); controls[key]=(check,edit)
+        clean=QCheckBox('清理书名中的营销括号（保留册数、版本及普通副标题）'); layout.addWidget(clean)
+        subtitle=QCheckBox('清空副标题，并从书名末尾去除完全匹配的副标题'); layout.addWidget(subtitle)
+        normalize=QCheckBox('规范已有中文语言代码（不改未知、繁体及其他语言）'); layout.addWidget(normalize)
+        review=QCheckBox('将选中图书分类标为待人工核对（保留原分类名称）'); layout.addWidget(review)
+        go=QPushButton('下一步：预览变化'); go.clicked.connect(dialog.accept); layout.addWidget(go)
+        if dialog.exec()!=QDialog.Accepted: return
+        ids=self.all_filtered_ids() if scope.currentData()=='filtered' else self.selected_ids()
+        if not ids: self.show_error('此范围没有图书'); return
+        fields={k:(e.currentData() if isinstance(e,QComboBox) else e.text().strip()) for k,(c,e) in controls.items() if c.isChecked()}
+        try:
+            books=[self.ws.book(bid) for bid in ids]
+            if not all(books): raise ValueError('书库发生变化，请刷新后重试')
+            updates=batch_edit.preview(books,fields,clean=clean.isChecked(),clear_subtitle=subtitle.isChecked(),normalize=normalize.isChecked(),review=review.isChecked())
+        except ValueError as exc: self.show_error(str(exc)); return
+        if not updates: QMessageBox.information(self,'无需修改','没有字段发生变化。'); return
+        updates = self.review_updates(books, updates)
+        if not updates: return
+        if any(item['changes'].get('copyright_status') for item in updates) and not self.ask('确认版权范围','确认这些图书均属于所选版权类别，且来源说明真实有效？'): return
+        self.start('批量修改资料',lambda control,progress: batch_edit.apply(self.ws,updates,control),lambda count: QMessageBox.information(self,'批量修改完成',f'已修改 {count} 本，原文件和云端内容未修改。'))
+
+    def review_updates(self, books, updates):
+        updates = [dict(item, changes=dict(item['changes']), before=dict(item.get('before', {}))) for item in updates]
+        original_books = {b['book_id']: b for b in books}
+        preview=QDialog(self); preview.setWindowTitle(f'预览：{len(updates)} 本将被修改'); preview.resize(1100,650); box=QVBoxLayout(preview)
+        box.addWidget(QLabel('双击“修改后”打开大窗口再次编辑；取消勾选的书不提交。“修改前”只读。确认后可撤销本批。'))
+        page_size = 100
+        page_count = max(1, (len(updates) + page_size - 1) // page_size)
+        checked = [True] * len(updates)
+        current_page = [0]
+        grid=QTableWidget(0,3); grid.setHorizontalHeaderLabels(['图书','修改前','修改后']); grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        field_names={'title':'书名','subtitle':'副标题','author':'作者','publisher':'出版社','description':'简介','description_source':'简介来源','language':'语言','copyright_status':'版权状态','source_reference':'授权/来源','main_category':'主分类','subcategory':'子分类','rights_review_status':'版权核对','classification_status':'分类核对'}
+        value_names={'confirmed':'已确认','needs_review':'待人工核对','pending':'待确认','authorized':'已获授权','public_domain':'公版','open_license':'开放许可'}
+        def readable(values):
+            return '\n'.join(field_names.get(k,k)+'：'+(value_names.get(str(v),str(v)) if v else '（空）') for k,v in values.items())
+        grid.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); box.addWidget(grid)
+        nav = QHBoxLayout(); previous = QPushButton('上一页'); following = QPushButton('下一页'); page_label = QLabel(); selected_label = QLabel()
+        nav.addWidget(previous); nav.addWidget(following); nav.addWidget(page_label); nav.addStretch(); nav.addWidget(selected_label); box.addLayout(nav)
+        loading = [False]
+        def refresh_selected(): selected_label.setText(f'已勾选 {sum(checked)} / {len(checked)} 本；当前页浅绿色为勾选，白色为未勾选')
+        def changed(cell):
+            if loading[0] or cell.column()!=0: return
+            absolute = current_page[0]*page_size + cell.row()
+            if absolute < len(checked): checked[absolute] = cell.checkState()==Qt.Checked
+            chosen = checked[absolute]
+            for col in range(grid.columnCount()):
+                target = grid.item(cell.row(), col)
+                if target:
+                    target.setBackground(QColor('#d1eddd' if chosen else '#ffffff'))
+                    target.setForeground(QColor('#164d32' if chosen else '#526057'))
+            refresh_selected()
+        grid.itemChanged.connect(changed)
+        def load_page(number):
+            loading[0] = True; current_page[0] = max(0,min(number,page_count-1))
+            start = current_page[0]*page_size; page = updates[start:start+page_size]
+            grid.setRowCount(len(page))
+            for row,item in enumerate(page):
+                values=[item['title'],readable(item['before']),readable(item['changes'])]
+                for col,value in enumerate(values):
+                    cell=QTableWidgetItem(value); cell.setToolTip(value); grid.setItem(row,col,cell)
+                grid.item(row,0).setCheckState(Qt.Checked if checked[start+row] else Qt.Unchecked)
+                for col in range(3):
+                    grid.item(row,col).setBackground(QColor('#d1eddd' if checked[start+row] else '#ffffff'))
+                    grid.item(row,col).setForeground(QColor('#164d32' if checked[start+row] else '#526057'))
+                grid.setRowHeight(row,min(180,max(54,22*max(len(item['changes']),1))))
+            page_label.setText(f'第 {current_page[0]+1} / {page_count} 页（每页最多 {page_size} 本）')
+            previous.setEnabled(current_page[0]>0); following.setEnabled(current_page[0]<page_count-1)
+            loading[0] = False; refresh_selected()
+        previous.clicked.connect(lambda: load_page(current_page[0]-1)); following.clicked.connect(lambda: load_page(current_page[0]+1)); load_page(0)
+        def edit_row(row, col):
+            if col != 2: return
+            absolute = current_page[0]*page_size+row
+            item = updates[absolute]
+            revised = self.edit_update_fields(original_books[item['book_id']], item, field_names, preview)
+            if revised is not None:
+                updates[absolute] = revised
+                grid.item(row, 2).setText(readable(revised['changes']))
+                grid.item(row, 2).setToolTip(readable(revised['changes']))
+        grid.cellDoubleClicked.connect(edit_row)
+        edit_button = QPushButton('大窗口编辑当前行的修改后内容')
+        edit_button.clicked.connect(lambda: edit_row(grid.currentRow(), 2) if grid.currentRow() >= 0 else None); box.addWidget(edit_button)
+        commit=QPushButton(f'确认修改 {len(updates)} 本'); commit.clicked.connect(preview.accept); box.addWidget(commit)
+        if preview.exec()!=QDialog.Accepted: return None
+        return [item for index,item in enumerate(updates) if checked[index] and item['changes']]
+
+    def edit_update_fields(self, book, item, labels, parent):
+        dialog = QDialog(parent); dialog.setWindowTitle('修改后：人工再次调整'); dialog.resize(950, 720)
+        layout = QVBoxLayout(dialog); layout.addWidget(QLabel('仅编辑本批涉及的字段；状态由资料重新计算。保存后回到预览，不立即提交书库。'))
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); content = QWidget(); form = QFormLayout(content); scroll.setWidget(content); layout.addWidget(scroll)
+        controls = {}
+        for key, value in item['changes'].items():
+            if key in {'classification_status', 'rights_review_status', 'description_source'}: continue
+            old = QTextEdit(); old.setPlainText(str(book['metadata'].get(key) or '')); old.setReadOnly(True); old.setMaximumHeight(100)
+            form.addRow(labels.get(key,key) + '（原值）', old)
+            if key == 'copyright_status':
+                edit = QComboBox()
+                for name, data in [('尚未确认',''),('已获授权','authorized'),('公版','public_domain'),('开放许可','open_license')]: edit.addItem(name,data)
+                edit.setCurrentIndex(max(0,edit.findData(value)))
+            else:
+                edit = QTextEdit(); edit.setAcceptRichText(False); edit.setPlainText(str(value or ''))
+                edit.setMinimumHeight(240 if key=='description' else 100); edit.setStyleSheet('font-size:18px;padding:8px;')
+            edit.setObjectName('edit_' + key); controls[key] = edit; form.addRow(labels.get(key,key) + '（新值）', edit)
+        if not controls: layout.addWidget(QLabel('本行仅改变核对状态。如不需要，请返回预览取消勾选。'))
+        error = QLabel(); error.setWordWrap(True); layout.addWidget(error)
+        result = {}
+        def accept():
+            fields = {key:(edit.currentData() if isinstance(edit,QComboBox) else edit.toPlainText().strip()) for key,edit in controls.items()}
+            for key in fields:
+                if key != 'description': fields[key] = ' '.join(str(fields[key]).splitlines())
+            if 'description_source' in item['changes']: fields['description_source'] = item['changes']['description_source']
+            if fields.get('description') != item['changes'].get('description') and 'description' in fields:
+                fields['description_source'] = '人工编辑'
+            try:
+                revised = batch_edit.preview([book], fields, review=item['changes'].get('classification_status')=='needs_review' and not {'main_category','subcategory'} & fields.keys())
+                result['item'] = revised[0] if revised else dict(item, changes={})
+                dialog.accept()
+            except ValueError as exc: error.setText(str(exc))
+        bar = QHBoxLayout(); cancel = QPushButton('取消'); cancel.clicked.connect(dialog.reject); save=QPushButton('保存到预览'); save.clicked.connect(accept); bar.addWidget(cancel); bar.addWidget(save); layout.addLayout(bar)
+        return result.get('item') if dialog.exec()==QDialog.Accepted else None
+
+    def highlight_checks(self, grid, layout):
+        label = QLabel(); layout.addWidget(label)
+        grid.setSelectionBehavior(QAbstractItemView.SelectRows)
+        checked_rows = set()
+        def refresh(changed=None):
+            grid.blockSignals(True)
+            for row in ([changed.row()] if changed is not None else range(grid.rowCount())):
+                chosen = grid.item(row, 0).checkState()==Qt.Checked
+                if chosen: checked_rows.add(row)
+                else: checked_rows.discard(row)
+                for col in range(grid.columnCount()):
+                    cell = grid.item(row, col)
+                    if cell:
+                        cell.setBackground(QColor('#d1eddd' if chosen else '#ffffff'))
+                        cell.setForeground(QColor('#164d32' if chosen else '#526057'))
+            grid.blockSignals(False)
+            label.setText(f'已勾选 {len(checked_rows)} / {grid.rowCount()} 本；浅绿色为勾选，白色为未勾选。')
+        grid.itemChanged.connect(refresh); refresh()
+
+    def extract_descriptions(self):
+        ids = self.organize_ids()
+        if not ids: return
+        def done(result):
+            report = QDialog(self); report.setWindowTitle('作者 / 出版社 / 简介提取结果'); report.resize(900, 600)
+            layout = QVBoxLayout(report); text = QTextEdit(); text.setReadOnly(True)
+            text.setPlainText('\n'.join(row['title']+'：'+row['message'] for row in result['report'])); layout.addWidget(text)
+            next_button = QPushButton(f"预览 {len(result['updates'])} 本可回填资料")
+            next_button.clicked.connect(report.accept); layout.addWidget(next_button)
+            if report.exec()!=QDialog.Accepted or not result['updates']: return
+            updates = self.review_updates(result['books'], result['updates'])
+            if updates:
+                self.start('回填图书资料', lambda control,progress: batch_edit.apply(self.ws, updates, control),
+                    lambda count: QMessageBox.information(self,'资料回填完成',f'已回填 {count} 本的缺失作者、出版社或简介，可撤销。网站同步预检后再提交；不会重新上传电子书。'))
+        self.start('离线提取作者、出版社和简介', lambda control,progress: descriptions.extract(self.ws, ids, control, progress), done, refresh=False)
+
+    def export_booklist(self):
+        ids = self.selected_ids() or self.all_filtered_ids()
+        if not ids: self.show_error('没有可导出的图书'); return
+        path, _ = QFileDialog.getSaveFileName(self, f'导出 {len(ids)} 本书单（有选中导出选中，否则导出筛选结果）', '图书书单.csv', 'CSV 文件 (*.csv)')
+        if not path: return
+        if not path.lower().endswith('.csv'): path += '.csv'
+        target = Path(path)
+        if target.exists() and not self.ask('覆盖书单文件', '目标书单已存在，确认覆盖？'): return
+        self.start('导出书单', lambda control,progress: booklist.export(self.ws, ids, target, control, progress),
+            lambda count: QMessageBox.information(self,'书单导出完成',f'已导出 {count} 本：{target}\n仅资料，不含电子书文件、本地路径和账号凭据。'), refresh=False)
+
+    def export_ai_template(self):
+        ids = self.selected_ids() or self.all_filtered_ids()
+        if not ids: self.show_error('没有可导出的图书'); return
+        path, _ = QFileDialog.getSaveFileName(self, f'导出 {len(ids)} 本 AI 补全模板', 'AI补全图书资料.csv', 'CSV 文件 (*.csv)')
+        if not path: return
+        if not path.lower().endswith('.csv'): path += '.csv'
+        target = Path(path)
+        if target.exists() and not self.ask('覆盖模板', '目标文件已存在，确认覆盖？'): return
+        self.start('导出 AI 补全模板', lambda control,progress: booklist.export_ai_template(self.ws,ids,target,control,progress),
+            lambda count: QMessageBox.information(self,'AI 模板已导出',f'已导出 {count} 本：{target}\n交给 AI 时要求绝对保留系统编号（BK_…）。完成后用“导入表格回填资料”，软件只按系统编号精确匹配并预览。'), refresh=False)
+
+    def organize_ids(self):
+        choice, ok = QInputDialog.getItem(self, '选择处理范围', '仅操作指定范围，不自动处理整个书库',
+            [f'当前选中：{len(self.selected_ids())} 本', f'全部筛选结果：{len(self.all_filtered_ids())} 本'], 0, False)
+        if not ok: return []
+        ids = self.all_filtered_ids() if choice.startswith('全部') else self.selected_ids()
+        if not ids: self.show_error('没有图书，请先选中图书或选择全部筛选结果')
+        return ids
+
+    def edit_titles(self):
+        ids = self.organize_ids()
+        if not ids: return
+        books = [self.ws.book(bid) for bid in ids]
+        dialog = QDialog(self); dialog.setWindowTitle('批量精简书名：预览后可逐行修改'); dialog.resize(1100, 700)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel('这里只改书库书名。需要实际文件请再点“导出改名文件”。已上传文件不会重命名。'))
+        rule = QComboBox()
+        for label, value in [('仅去除已有副标题和营销文字（保守）', ''), ('删除第一个冒号及其后文字', 'colon'), ('删除第一个破折号及其后文字', 'dash'), ('删除第一个冒号或破折号及其后文字', 'both')]: rule.addItem(label, value)
+        layout.addWidget(rule)
+        layout.addWidget(QLabel('冒号可能属于正式书名，例如“龙脉：千里大运河”。请核对新书名；不想改的取消勾选。'))
+        grid = QTableWidget(len(books), 3); grid.setHorizontalHeaderLabels(['应用', '原书名', '新书名（双击打开大窗口）'])
+        grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        grid.verticalHeader().setDefaultSectionSize(54)
+        grid.setStyleSheet('QTableWidget { font-size: 15px; }')
+        grid.setColumnWidth(0, 65)
+        for row, book in enumerate(books):
+            checked = QTableWidgetItem(); checked.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable); checked.setCheckState(Qt.Checked); grid.setItem(row, 0, checked)
+            old = QTableWidgetItem(book['metadata'].get('title', '')); old.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable); grid.setItem(row, 1, old)
+        def generate():
+            for row, book in enumerate(books):
+                meta = book['metadata']
+                grid.setItem(row, 2, QTableWidgetItem(batch_edit.clean_title(meta.get('title', ''), meta.get('subtitle', ''), True, rule.currentData())))
+        generate(); rule.currentIndexChanged.connect(generate)
+        def edit_row(row, column):
+            if column != 2: return
+            updated = self.edit_title_text(grid.item(row, 1).text(), grid.item(row, 2).text(), dialog)
+            if updated is not None:
+                grid.item(row, 2).setText(updated)
+                grid.item(row, 2).setToolTip(updated)
+        grid.cellDoubleClicked.connect(edit_row)
+        grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); grid.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch); layout.addWidget(grid)
+        edit_button = QPushButton('大窗口编辑当前行的新书名')
+        edit_button.clicked.connect(lambda: edit_row(grid.currentRow(), 2) if grid.currentRow() >= 0 else None)
+        layout.addWidget(edit_button)
+        self.highlight_checks(grid, layout)
+        go = QPushButton('确认应用勾选行（清空对应副标题，可撤销）'); go.clicked.connect(dialog.accept); layout.addWidget(go)
+        if dialog.exec() != QDialog.Accepted: return
+        try:
+            updates = []
+            for row, book in enumerate(books):
+                if grid.item(row, 0).checkState() == Qt.Checked:
+                    updates.extend(batch_edit.preview([book], {'title': grid.item(row, 2).text().strip(), 'subtitle': ''}))
+        except ValueError as exc: self.show_error(str(exc)); return
+        self.start('精简书名', lambda control, progress: batch_edit.apply(self.ws, updates, control),
+            lambda count: QMessageBox.information(self, '书名已更新', f'已修改 {count} 本。点击顶部“导出改名文件”可得到实际改名文件；原书与云端文件不变。'))
+
+    def edit_title_text(self, original, current, parent=None):
+        editor = QDialog(parent or self); editor.setWindowTitle('编辑完整书名'); editor.resize(920, 620)
+        editor.setMinimumSize(640, 460)
+        layout = QVBoxLayout(editor)
+        layout.addWidget(QLabel('原书名（完整显示，可选中复制）'))
+        old = QTextEdit(); old.setObjectName('original_title'); old.setReadOnly(True); old.setPlainText(original)
+        old.setStyleSheet('QTextEdit { font-size: 17px; padding: 12px; }'); layout.addWidget(old, 1)
+        layout.addWidget(QLabel('新书名（可换行查看；保存时合并成一行）'))
+        new = QTextEdit(); new.setObjectName('edited_title'); new.setAcceptRichText(False); new.setPlainText(current)
+        new.setStyleSheet('QTextEdit { font-size: 20px; padding: 12px; }'); layout.addWidget(new, 2)
+        hint = QLabel('保存只更新本次预览，最后仍需点击“确认应用勾选行”才能写入书库。'); hint.setWordWrap(True); layout.addWidget(hint)
+        bar = QHBoxLayout(); cancel = QPushButton('取消，不修改'); save = QPushButton('保存到预览')
+        cancel.clicked.connect(editor.reject)
+        def accept():
+            if not new.toPlainText().strip():
+                hint.setText('书名不能为空，请填写新书名。'); new.setFocus(); return
+            editor.accept()
+        save.clicked.connect(accept); bar.addWidget(cancel); bar.addWidget(save); layout.addLayout(bar)
+        new.setFocus()
+        if editor.exec() != QDialog.Accepted: return None
+        return ' '.join(new.toPlainText().splitlines()).strip()
+
+    def edit_categories(self):
+        ids = self.organize_ids()
+        if not ids: return
+        books = [self.ws.book(bid) for bid in ids]
+        rules = self.ws.setting('category_rules', DEFAULT_RULES)
+        categories = sorted(set(rules) | {b['metadata'].get('main_category', '') for b in books})
+        dialog = QDialog(self); dialog.setWindowTitle('批量分类：选择、修改、人工确认'); dialog.resize(1150, 720)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel('逐本修改主/子分类，或统一填入勾选行。关键词建议不是ISBN核验；不能确定的不要勾选确认。'))
+        bar = QHBoxLayout(); main = QComboBox(); main.setEditable(True); main.addItems(categories)
+        sub = QLineEdit(); sub.setPlaceholderText('子分类（可留空）'); bar.addWidget(main); bar.addWidget(sub)
+        fill = QPushButton('将此分类填入勾选行'); bar.addWidget(fill)
+        suggest = QPushButton('为勾选行生成关键词建议'); bar.addWidget(suggest); layout.addLayout(bar)
+        grid = QTableWidget(len(books), 5); grid.setHorizontalHeaderLabels(['应用', '书名', '主分类（可编辑）', '子分类（可编辑）', '依据 / 提醒'])
+        for row, book in enumerate(books):
+            meta = book['metadata']
+            checked = QTableWidgetItem(); checked.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable); checked.setCheckState(Qt.Checked); grid.setItem(row, 0, checked)
+            for col, value in [(1, meta.get('title', '')), (4, meta.get('classification_evidence', '请人工核对'))]:
+                cell = QTableWidgetItem(value); cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable); cell.setToolTip(value); grid.setItem(row, col, cell)
+            picker = QComboBox(); picker.setEditable(True); picker.addItems(categories); picker.setCurrentText(meta.get('main_category', '')); grid.setCellWidget(row, 2, picker)
+            grid.setItem(row, 3, QTableWidgetItem(meta.get('subcategory', '')))
+        def populate(use_suggestions=False):
+            from .engine import classify
+            for row, book in enumerate(books):
+                if grid.item(row, 0).checkState() != Qt.Checked: continue
+                if use_suggestions:
+                    result = classify(Path('book.epub'), Path('.'), book['metadata'], rules)
+                    candidates = result.get('classification_candidates', [])
+                    if not candidates:
+                        grid.item(row, 4).setText('没有明确关键词，保留原分类；请人工指定'); continue
+                    grid.cellWidget(row, 2).setCurrentText(candidates[0]['name']); grid.item(row, 3).setText('')
+                    grid.item(row, 4).setText('待核对：' + '；'.join(c['name'] + '（' + '、'.join(c['evidence']) + '）' for c in candidates))
+                else:
+                    grid.cellWidget(row, 2).setCurrentText(main.currentText().strip()); grid.item(row, 3).setText(sub.text().strip())
+                    grid.item(row, 4).setText('人工批量指定，请核对')
+        fill.clicked.connect(lambda: populate(False)); suggest.clicked.connect(lambda: populate(True))
+        grid.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch); grid.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        grid.setColumnWidth(0, 50); grid.setColumnWidth(2, 170); layout.addWidget(grid)
+        self.highlight_checks(grid, layout)
+        go = QPushButton('我已核对：保存并确认勾选行分类'); go.clicked.connect(dialog.accept); layout.addWidget(go)
+        if dialog.exec() != QDialog.Accepted: return
+        updates = []
+        for row, book in enumerate(books):
+            if grid.item(row, 0).checkState() != Qt.Checked: continue
+            category = grid.cellWidget(row, 2).currentText().strip()
+            if not category: self.show_error('《' + book['metadata'].get('title', '') + '》主分类为空，请填写或取消勾选'); return
+            updates.extend(batch_edit.preview([book], {'main_category': category, 'subcategory': grid.item(row, 3).text().strip()}))
+        if not self.ask('确认分类', '将勾选行标为人工已确认。你已核对这些分类，而不是仅依赖关键词建议？'): return
+        self.start('批量分类', lambda control, progress: batch_edit.apply(self.ws, updates, control),
+            lambda count: QMessageBox.information(self, '分类完成', f'已更新 {count} 本，可撤销。未改版权、原文件或已有网盘目录。'))
+
+    def export_renamed(self):
+        ids = self.organize_ids()
+        if not ids: return
+        destination = QFileDialog.getExistingDirectory(self, '选择另存目录；按当前书名和分类导出，不覆盖原书')
+        if destination:
+            self.start('导出改名文件', lambda control, progress: export_snapshot(self.ws, ids, Path(destination), control, progress),
+                lambda result: QMessageBox.information(self, '已生成改名文件', str(result) + '\n网盘上传文件夹内是按新书名和分类生成的电子书；原文件未修改。异常文件请查看异常区。'))
+
+    def undo_batch(self):
+        if self.ask('撤销上次整批修改','将恢复本批修改前的资料；后续又有编辑的图书会阻止整批撤销。'):
+            self.start('撤销批量修改',lambda control,progress: batch_edit.undo(self.ws,control),lambda count: QMessageBox.information(self,'已撤销',f'已恢复 {count} 本资料。'))
 
     def undo_book(self):
         if self.current_id:
@@ -608,28 +1067,30 @@ class MainWindow(QMainWindow):
         self.reload()
 
     def delete_selected(self):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "任务进行中", "请先取消或等待当前任务完成，再删除图书。")
+            return
         ids = self.require_ids()
         if not ids:
             return
-        if not self.ask("确认从工作区移除", f"将彻底删除选中的 {len(ids)} 本书（含源文件记录、封面与上传结果）。原电子书文件不会被删除。此操作不可撤销，是否继续？"):
+        if not self.ask("确认从软件书库移除", f"将移除明确选中的 {len(ids)} 本图书及其本地上传记录。删除前自动备份资料；电脑原始电子书、网盘文件和网站内容均不删除。\n重新扫描原文件会再次导入；如只想暂停处理，请用“排除”。是否继续？"):
             return
+        self.table.clearSelection()
         def work(control, progress):
-            total = len(ids)
-            chunk = 100
-            deleted = 0
-            for i in range(0, total, chunk):
-                control.check()
-                batch = ids[i:i + chunk]
-                self.ws.delete_books(batch)
-                deleted += len(batch)
-                progress(f"已删除 {deleted}/{total} 本...")
-            return f"已删除 {total} 本书"
-        self.start("从工作区移除", work)
+            progress(f"正在备份资料并移除 {len(ids)} 本图书…")
+            return self.ws.delete_books(ids, control)
+        def done(result):
+            QMessageBox.information(self, "已从软件书库移除", f"已移除 {result['deleted']} 本，原文件和云端内容不变。\n删除前资料备份：\n{result['backup']}")
+        self.start("从软件书库移除", work, done)
 
     def on_table_context_menu(self, pos):
+        if self.worker and self.worker.isRunning():
+            return
         index = self.table.indexAt(pos)
         if not index.isValid():
             return
+        if not self.table.selectionModel().isRowSelected(index.row(), QModelIndex()):
+            self.table.selectRow(index.row())
         source = self.proxy.mapToSource(index)
         book = self.model.rows[source.row()]
         menu = QMenu(self)
@@ -683,12 +1144,13 @@ class MainWindow(QMainWindow):
         rows = self.ws.books()
         out = []
         for b in rows:
-            net = self.ws.result(b["book_id"], "quark") or {}
+            quark = self.ws.result(b["book_id"], "quark") or {}
+            baidu = self.ws.result(b["book_id"], "baidu") or {}
             site = self.ws.result(b["book_id"], "site:" + site_id) or {}
-            if not (net.get("share_url") or site.get("status") == "ok"):
+            if not (quark.get("share_url") or baidu.get("share_url") or site.get("status") == "ok"):
                 continue
             m = b["metadata"]
-            out.append([m.get("title", ""), m.get("author", ""), m.get("isbn", ""), m.get("main_category", ""), net.get("share_url", ""), site.get("resource_url", "") or ""])
+            out.append([m.get("title", ""), m.get("author", ""), m.get("isbn", ""), m.get("main_category", ""), quark.get("share_url", ""), baidu.get("share_url", ""), site.get("resource_url", "") or ""])
         if not out:
             QMessageBox.information(self, "无已上传图书", "当前没有已传网盘或已同步网站的书。")
             return
@@ -697,83 +1159,50 @@ class MainWindow(QMainWindow):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["书名", "作者", "ISBN", "分类", "网盘分享链接", "网站资源链接"])
-            w.writerows(out)
+            w.writerow(["书名", "作者", "ISBN", "分类", "夸克分享链接", "百度分享链接", "网站资源链接"])
+            # 表格中的图书资料按文本导出，不让书名等被 Excel 当作公式执行。
+            def text_cell(value):
+                value = str(value or "")
+                return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
+            w.writerows([[text_cell(value) for value in row] for row in out])
         QMessageBox.information(self, "已导出", f"已导出 {len(out)} 本已上传图书到：\n{path}")
 
     def import_table(self):
+        from .table_import import read_table, preview_updates, apply_updates
         path, _ = QFileDialog.getOpenFileName(self, "选择表格（CSV / XLSX）", "", "表格 (*.csv *.xlsx)")
         if not path:
             return
-        try:
-            rows = self._read_table(Path(path))
-        except Exception as exc:
-            self.show_error(f"读取表格失败：{exc}")
+        modes = ["只补空字段（推荐）", "覆盖表格提供的非空字段"]
+        mode, accepted = QInputDialog.getItem(self, "选择表格回填方式", "预检后还需确认提交：", modes, 0, False)
+        if not accepted:
             return
-        if not rows:
-            self.show_error("表格为空或无法解析表头")
-            return
-        headers = rows[0]
-        colmap = {}
-        aliases = {"title": ("书名", "title", "图书名称", "名称"), "isbn": ("isbn", "ISBN", "书号"), "main_category": ("分类", "主分类", "category", "类别"), "author": ("作者", "author"), "translator": ("译者", "translator"), "publisher": ("出版社", "publisher"), "publish_year": ("出版年", "出版年份", "year"), "language": ("语言", "language"), "subtitle": ("副标题", "subtitle"), "description": ("简介", "描述", "description")}
-        for field, names in aliases.items():
-            for i, h in enumerate(headers):
-                if str(h).strip().lower() in [n.lower() for n in names]:
-                    colmap[field] = i; break
-        # 建立书名/ISBN 索引
-        books = self.ws.books()
-        by_isbn = {}
-        by_title = {}
-        for b in books:
-            m = b["metadata"]
-            if m.get("isbn"):
-                by_isbn[m["isbn"].strip()] = b["book_id"]
-            by_title[self._norm_title(m.get("title", ""))] = b["book_id"]
-        matched = updated = skipped = 0
-        for r in rows[1:]:
-            title = (r[colmap["title"]].strip() if "title" in colmap else "")
-            isbn = (r[colmap["isbn"]].strip() if "isbn" in colmap else "")
-            bid = by_isbn.get(isbn) if isbn else None
-            if not bid and title:
-                t = self._norm_title(title)
-                bid = by_title.get(t)
-                if not bid:
-                    close = difflib.get_close_matches(t, list(by_title), n=1, cutoff=0.9)
-                    if close:
-                        bid = by_title[close[0]]
-            if not bid:
-                skipped += 1; continue
-            matched += 1
-            changes = {}
-            for field in ("isbn", "main_category", "author", "translator", "publisher", "publish_year", "language", "subtitle", "description"):
-                if field in colmap and len(r) > colmap[field] and str(r[colmap[field]]).strip():
-                    val = str(r[colmap[field]]).strip()
-                    if field == "publish_year" and not val.isdigit():
-                        continue
-                    changes[field] = val
-            if not changes:
-                continue
-            if "main_category" in changes:
-                changes["classification_status"] = "confirmed"
-            try:
-                self.ws.edit(bid, changes); updated += 1
-            except ValueError:
-                pass
-        QMessageBox.information(self, "导入完成", f"表格共 {len(rows)-1} 行。\n匹配到 {matched} 本，已更新 {updated} 本，跳过（未匹配或无有效字段）{skipped} 行。\n匹配依据：ISBN 精确 → 书名精确 → 书名模糊(≥90%)。")
-        self.reload()
+        overwrite = mode == modes[1]
+        def preview_work(control, progress):
+            control.check()
+            return preview_updates(self.ws.books(), read_table(Path(path)), overwrite=overwrite)
+        def confirm(preview):
+            details = "\n".join(f"第 {item['row']} 行：{item['message']}" for item in preview["issues"][:20])
+            self.progress_log.append(details or "所有非空行预检通过")
+            count = len(preview["updates"])
+            if not count:
+                QMessageBox.information(self, "没有可回填项", details or "表格没有可回填的有效字段")
+                return
+            if not self.ask("确认表格回填", f"有效行 {preview['total']}，可回填 {count} 本，跳过 {len(preview['issues'])} 行。\n只精确匹配，不自动合并同名版本。方式：{mode}。\n" + details + "\n是否提交？"):
+                return
+            def work(control, progress):
+                control.check()
+                return apply_updates(self.ws, preview, control)
+            self.start("表格回填", work, lambda count: QMessageBox.information(self, "回填完成", f"已更新 {count} 本；修改在同一事务中提交，可逐本撤销。"))
+        self.start("表格预检（不修改图书）", preview_work, confirm)
 
-    def _read_table(self, path: Path):
-        if path.suffix.lower() == ".csv":
-            with path.open(encoding="utf-8-sig") as f:
-                return [row for row in csv.reader(f)]
-        import openpyxl
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        ws = wb.active
-        return [[(c.value if c.value is not None else "") for c in row] for row in ws.iter_rows()]
+    def _read_table(self, path):
+        from .table_import import read_table
+        return read_table(path)
 
     @staticmethod
-    def _norm_title(t):
-        return re.sub(r"\s+", "", str(t).strip().lower())
+    def _norm_title(value):
+        from .table_import import normalized
+        return normalized(value)
 
     def save_settings(self):
         self.ws.set_setting("connections", {key: value.text().strip() for key, value in self.settings_fields.items()})
@@ -828,26 +1257,24 @@ class MainWindow(QMainWindow):
 
     def quark_pick_folder(self):
         config = self.config()
-        try:
-            folders = quark_list_folders(self.ws, config)
-        except Exception as exc:
-            QMessageBox.information(self, "无法自动列出目录", str(exc))
-            return
+        self.start("读取夸克目录", lambda control, progress: quark_list_folders(self.ws, config), self.show_quark_folders)
+
+    def show_quark_folders(self, folders):
         dlg = QDialog(self); dlg.setWindowTitle("选择夸克目标目录"); dlg.resize(420, 320)
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("选择一本书库顶层文件夹（分类子目录会由程序自动创建）："))
+        v.addWidget(QLabel("选择目标目录；分类子目录会按需创建："))
         lw = QListWidget()
-        lw.addItem("（根目录，填写 0）")
-        for name, fid in folders:
-            lw.addItem(f"{name}　{fid}")
+        for name, fid in [("（根目录）", "0"), *folders]:
+            item = QListWidgetItem(f"{name}　{fid}")
+            item.setData(Qt.UserRole, str(fid))
+            lw.addItem(item)
         v.addWidget(lw)
         bb = QHBoxLayout()
         ok = QPushButton("确定"); ok.clicked.connect(dlg.accept)
         cancel = QPushButton("取消"); cancel.clicked.connect(dlg.reject)
         bb.addWidget(ok); bb.addWidget(cancel); v.addLayout(bb)
-        if dlg.exec() == QDialog.Accepted and lw.currentRow() >= 0:
-            text = lw.currentItem().text()
-            fid = "0" if lw.currentRow() == 0 else text.rsplit(" ", 1)[-1]
+        if dlg.exec() == QDialog.Accepted and lw.currentItem():
+            fid = lw.currentItem().data(Qt.UserRole)
             self.settings_fields["quark_parent"].setText(fid)
             self.auth_status.setText(f"已填入夸克目标目录编号：{fid}（记得点「保存连接设置」生效）。")
 
@@ -899,7 +1326,7 @@ class MainWindow(QMainWindow):
                         client.close()
                 return f"处理完成，共 {len(ids)} 本。上传完成不等于网站已经发布。"
             except Exception as exc:
-                self.ws.finish_job(job, "cancelled" if isinstance(exc, Cancelled) else "failed", {"error": type(exc).__name__, "ids": ids, "kind": kind, "provider": provider})
+                self.ws.finish_job(job, "cancelled" if isinstance(exc, Cancelled) else "failed", {"error": batch_edit.error_message(exc), "ids": ids, "kind": kind, "provider": provider})
                 raise
         self.start("云端任务", work, self.load_preview if kind == "all" else None)
 
@@ -921,7 +1348,7 @@ class MainWindow(QMainWindow):
             from app.providers import registry
             parsed = registry.recognize(value)
             self.ws.save_result(self.current_id, parsed.provider_code, {"state": "shared", "share_url": parsed.normalized_url, "extract_code": parsed.extract_code, "source": "manual"})
-            self.show_selected()
+            self.reload(); self.show_selected()
         except ValueError as exc:
             self.show_error(str(exc))
 

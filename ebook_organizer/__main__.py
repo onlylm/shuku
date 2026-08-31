@@ -34,7 +34,8 @@ def main():
         if args.smoke_report:
             from .safeio import atomic_json
             app.processEvents()
-            atomic_json(args.smoke_report, {"started": True, "tabs": window.tabs.count(), "version": "0.1.0", "cloud_calls": 0})
+            from . import __version__
+            atomic_json(args.smoke_report, {"started": True, "tabs": window.tabs.count(), "version": __version__, "cloud_calls": 0})
             window.close()
             return 0
     except Exception as exc:

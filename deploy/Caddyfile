@@ -1,4 +1,5 @@
 {$SITE_DOMAIN} {
+	import /etc/caddy/domains/gate.conf
 	encode zstd gzip
 	request_body {
 		max_size 22MiB
@@ -10,3 +11,5 @@
 	# Caddy 设置可信转发头；web 不向宿主机公开 8000 端口。
 	reverse_proxy web:8000
 }
+
+import /etc/caddy/domains/*.caddy

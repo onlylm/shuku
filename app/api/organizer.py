@@ -17,6 +17,7 @@ from app.core.security import current_admin, verify_csrf
 from app.models import AdminUser, Category, OrganizerBatch, OrganizerToken
 from app.services.organizer_contract import CommitChoices, OrganizerPackage
 from app.services.organizer_sync import commit_batch, make_preview
+from app.services.site_settings import cover_hosts
 
 router = APIRouter()
 
@@ -59,8 +60,8 @@ def own_batch(db, batch_id, token):
 def info(token=Depends(sync_auth), db: Session = Depends(get_db)):
     settings = get_settings()
     return {"site_id": settings.organizer_site_id, "schema_version": "2.0", "max_books": 500,
-            "cover_hosts": settings.organizer_cover_hosts.split(","),
-            "categories": [{"id": c.id, "parent_id": c.parent_id, "name": c.name} for c in db.scalars(select(Category).order_by(Category.sort_order, Category.id))]}
+            "cover_hosts": cover_hosts(db, settings),
+            "categories": [{"id": c.id, "parent_id": c.parent_id, "name": c.name} for c in db.scalars(select(Category).where(Category.is_visible.is_(True)).order_by(Category.sort_order, Category.id))]}
 
 
 @router.post("/api/v1/organizer/preview")
@@ -94,7 +95,7 @@ def receipt(batch_id: str, token=Depends(sync_auth), db: Session = Depends(get_d
 
 def context(request, db, **extra):
     admin = current_admin(request, db)
-    return {"admin": admin, "active": "organizer", "flash": None, "tokens": list(db.scalars(select(OrganizerToken).where(OrganizerToken.admin_user_id == admin.id).order_by(OrganizerToken.id.desc()))), "site_id": get_settings().organizer_site_id, "cover_hosts": get_settings().organizer_cover_hosts or "尚未配置", **extra}
+    return {"admin": admin, "active": "organizer", "flash": None, "tokens": list(db.scalars(select(OrganizerToken).where(OrganizerToken.admin_user_id == admin.id).order_by(OrganizerToken.id.desc()))), "site_id": get_settings().organizer_site_id, "cover_hosts": ", ".join(cover_hosts(db)) or "尚未配置", "batches": list(db.scalars(select(OrganizerBatch).join(OrganizerToken).where(OrganizerToken.admin_user_id == admin.id).order_by(OrganizerBatch.created_at.desc()).limit(20))), **extra}
 
 
 @router.get("/admin/organizer", name="admin_organizer")

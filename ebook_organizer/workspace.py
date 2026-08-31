@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager, closing
+from contextlib import contextmanager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from .safeio import filesystem_path
@@ -102,35 +102,61 @@ class Workspace:
                 return Path(row[0])
         raise ValueError("源文件已移动或缺失，请重新扫描所在目录")
 
-    def edit(self, book_id: str, changes: dict):
+    def edit(self, book_id: str, changes: dict, *, connection=None):
         from .epub import isbn_valid
-        allowed = {"title", "subtitle", "author", "translator", "publisher", "isbn", "description", "main_category", "subcategory", "copyright_status", "source_reference", "rights_review_status", "classification_status", "language", "publish_year"}
+        allowed = {"title", "subtitle", "author", "translator", "publisher", "isbn", "description", "description_source", "main_category", "subcategory", "copyright_status", "source_reference", "rights_review_status", "classification_status", "language", "publish_year"}
         if set(changes) - allowed:
             raise ValueError("包含不可编辑字段")
         if changes.get("isbn") and not isbn_valid(changes["isbn"]):
             raise ValueError("ISBN 校验不通过，请核对版本或留空")
-        with self.connect() as db:
+        with (self.connect() if connection is None else nullcontext(connection)) as db:
             book = self.decode(db.execute("SELECT * FROM books WHERE book_id=?", (book_id,)).fetchone())
+            if not book:
+                raise ValueError("图书已移除，请刷新书库后重试")
             db.execute("INSERT INTO edits(book_id,previous,created_at) VALUES(?,?,?)", (book_id, json.dumps({"metadata": book["metadata"], "locked": book["locked"]}, ensure_ascii=False), now()))
             book["metadata"].update(changes)
             locked = sorted(set(book["locked"]) | set(changes))
             db.execute("UPDATE books SET metadata=?,locked=?,revision=revision+1,updated_at=? WHERE book_id=?", (json.dumps(book["metadata"], ensure_ascii=False), json.dumps(locked), now(), book_id))
 
-    def delete_book(self, book_id):
+    def edit_many(self, updates):
+        """批量回填整体提交；任一记录无效时回滚全部修改和撤销记录。"""
         with self.connect() as db:
-            db.execute("DELETE FROM results WHERE book_id=?", (book_id,))
-            db.execute("DELETE FROM sources WHERE book_id=?", (book_id,))
-            db.execute("DELETE FROM edits WHERE book_id=?", (book_id,))
-            db.execute("DELETE FROM books WHERE book_id=?", (book_id,))
+            for item in updates:
+                self.edit(item["book_id"], item["changes"], connection=db)
 
-    def delete_books(self, book_ids):
-        """在一个事务里批量删除，避免 700+ 本书逐条提交导致界面卡死。"""
+    def delete_book(self, book_id):
+        return self.delete_books([book_id])
+
+    def delete_books(self, book_ids, control=None):
+        """仅移除明确选中的数据库记录；保留源文件、缓存和删除前数据库备份。"""
+        if isinstance(book_ids, (str, bytes)) or book_ids is None:
+            raise ValueError("请明确选择要移除的图书")
+        ids = list(dict.fromkeys(book_ids))
+        if not ids:
+            return {"deleted": 0, "backup": None}
+        if control:
+            control.check()
         with self.connect() as db:
-            for book_id in book_ids:
+            if db.execute("SELECT 1 FROM jobs WHERE status='running' LIMIT 1").fetchone():
+                raise ValueError("还有运行中的书库任务，请先取消或等待完成，再移除图书")
+        backup = self.root / "backups" / ("before-remove-" + uuid.uuid4().hex + ".sqlite3")
+        self.backup(backup)
+        deleted = 0
+        with self.connect() as db:
+            for book_id in ids:
+                if control:
+                    control.check()
                 db.execute("DELETE FROM results WHERE book_id=?", (book_id,))
                 db.execute("DELETE FROM sources WHERE book_id=?", (book_id,))
                 db.execute("DELETE FROM edits WHERE book_id=?", (book_id,))
-                db.execute("DELETE FROM books WHERE book_id=?", (book_id,))
+                db.execute("DELETE FROM events WHERE book_id=?", (book_id,))
+                deleted += db.execute("DELETE FROM books WHERE book_id=?", (book_id,)).rowcount
+            # 旧预检/重试不得重新提交已移除图书。历史任务日志保留用于追溯。
+            for key in ("last_site_preview", "last_cloud_task", "last_pipeline_task"):
+                row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                if row and any(book_id in row[0] for book_id in ids):
+                    db.execute("DELETE FROM settings WHERE key=?", (key,))
+        return {"deleted": deleted, "backup": str(backup)}
 
     def undo(self, book_id):
         with self.connect() as db:

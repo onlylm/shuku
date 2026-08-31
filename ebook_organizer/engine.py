@@ -31,7 +31,7 @@ def classify(path: Path, root: Path, metadata: dict, rules: dict) -> dict:
     if root.name in rules:
         parts = (root.name,) + parts
     if parts and parts[0] in rules:
-        return {"main_category": parts[0], "subcategory": parts[1] if len(parts) > 1 else "", "classification_status": "confirmed", "classification_evidence": "已知分类目录：" + "/".join(parts[:2])}
+        return {"main_category": parts[0], "subcategory": parts[1] if len(parts) > 1 else "", "classification_status": "needs_review", "classification_evidence": "目录参考（未核对内容）：" + "/".join(parts[:2])}
     text = (metadata.get("title", "") + " " + " ".join(metadata.get("subjects", []))).casefold()
     matches = [(category, [word for word in words if word.casefold() in text]) for category, words in rules.items()]
     matches = sorted([item for item in matches if item[1]], key=lambda item: len(item[1]), reverse=True)[:3]
@@ -81,7 +81,7 @@ def scan(workspace: Workspace, root: Path, control=None, progress=lambda _: None
                 cover_path, version = None, None
                 if old:
                     duplicates += 1
-                    if old["metadata"].get("classification_status") == "confirmed":
+                    if old["metadata"].get("classification_status") == "confirmed" and 'classification_status' in old['locked']:
                         for key in ("main_category", "subcategory", "classification_status", "classification_evidence"):
                             if key in old["metadata"]:
                                 metadata[key] = old["metadata"][key]
@@ -169,7 +169,10 @@ def export_snapshot(workspace: Workspace, ids: list[str], destination: Path, con
             if metadata.get("subcategory"):
                 folder /= safe_name(metadata["subcategory"])
             name = safe_name(metadata["title"] + " - " + metadata.get("author", ""), 80)
-            relative = folder / (name + "__" + book["book_id"] + ".epub")
+            relative = folder / (name + ".epub")
+            # 只在同目录同名时附加稳定编号；每次导出使用独立快照，不覆盖原书。
+            if (staging / relative).exists():
+                relative = folder / (name + "__" + book["book_id"] + ".epub")
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             source = workspace.source(book["book_id"])

@@ -83,7 +83,8 @@ def upload_cover(workspace: Workspace, book_id: str, config: dict, credentials: 
     head = s3.head_object(Bucket=bucket, Key=key)
     if head.get("ContentLength") != len(data) or head.get("Metadata", {}).get("sha256") != digest:
         raise ValueError("R2 写入复核失败，未生成可用封面地址")
-    state = {"state": "uploaded", "key": key, "version": book["cover_version"], "sha256": digest}
+    state = {"state": "uploaded", "key": key, "version": book["cover_version"], "sha256": digest,
+             "account": account, "bucket": bucket}
     workspace.save_result(book_id, "r2", state)
     owned = http is None
     http = http or httpx.Client(timeout=30, follow_redirects=False)
@@ -146,14 +147,27 @@ def quark_list_folders(workspace, config):
             last_error = exc
             continue
         data = (out or {}).get("data") or {}
-        items = data.get("list") or data.get("folders") or data.get("items") or []
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = data.get("list") or data.get("folders") or data.get("items") or []
+        else:
+            continue
         folders = []
         for item in items:
             if isinstance(item, dict):
-                folders.append((str(item.get("name") or item.get("title") or ""), str(item.get("fid") or item.get("id") or "")))
+                fid = item.get("fid") or item.get("id")
+                if fid is not None and str(fid):
+                    folders.append((str(item.get("name") or item.get("title") or ""), str(fid)))
         if folders:
             return folders
     raise ValueError("无法自动列出夸克目录（连接器未提供列举子命令）。\n请在夸克网盘网页端打开目标文件夹，从浏览器地址栏复制文件夹 fid 后填入；顶层文件夹 fid 即「夸克目标目录编号」。")
+
+
+def stage_file(workspace, book, control=None):
+    """创建校验过的上传副本；不改动原书，也不调用网盘或环境识别。"""
+    control = control or Control()
+    control.check()
     path = workspace.source(book["book_id"])
     if sha256_file(path, control) != book["sha256"]:
         raise ValueError("源文件已改变，请重新扫描")
@@ -171,13 +185,33 @@ def quark_list_folders(workspace, config):
     return target
 
 
+def _quark_step(connector, arguments, stage, workspace, book_id, **kwargs):
+    from .batch_edit import error_message
+    from app.services.cloud_uploads import CloudConnectorError
+    workspace.event('quark', stage + '：开始', book_id)
+    try:
+        result = connector._run(arguments, **kwargs)
+    except (CloudConnectorError, OSError, ValueError) as exc:
+        message = stage + '失败：' + error_message(exc)
+        workspace.event('quark', message, book_id)
+        if isinstance(exc, CloudConnectorError):
+            raise type(exc)(message) from exc
+        if isinstance(exc, ValueError): raise ValueError(message) from exc
+        raise CloudConnectorError(message) from exc
+    workspace.event('quark', stage + '：完成', book_id)
+    return result
+
+
 def upload_book(workspace, book_id, provider, config, credentials, control=None, connector=None):
     control = control or Control()
+    control.check()
+    if provider not in {"quark", "baidu"}:
+        raise ValueError("暂不支持此网盘")
     book = workspace.book(book_id)
-    if book["status"] in {"failed", "blocked"} or book["excluded"]:
+    if not book or book["status"] in {"failed", "blocked"} or book["excluded"]:
         raise ValueError("文件异常或已排除，不能上传")
     meta = book["metadata"]
-    if meta.get("rights_review_status") != "confirmed" or not meta.get("source_reference") or not meta.get("copyright_status"):
+    if meta.get("rights_review_status") != "confirmed" or not (meta.get("source_reference") or "").strip() or meta.get("copyright_status") not in {"authorized", "public_domain", "open_license"}:
         raise ValueError("请先确认此书的版权类别和来源")
     if not meta.get("main_category") or meta.get("classification_status") != "confirmed":
         raise ValueError("请先确认分类")
@@ -199,7 +233,7 @@ def upload_book(workspace, book_id, provider, config, credentials, control=None,
             cache_key = parent + "/" + category
             fid = cache.get(cache_key)
             if not fid:
-                created = connector._run(["create-folder", "--dir-path", category, "--parent-fid", parent])
+                created = _quark_step(connector, ["create-folder", "--dir-path", category, "--parent-fid", parent], '创建分类目录', workspace, book_id)
                 fid = str((created.get("data") or {}).get("fid") or "")
                 if not fid:
                     raise ValueError("夸克未返回分类文件夹编号")
@@ -209,13 +243,13 @@ def upload_book(workspace, book_id, provider, config, credentials, control=None,
         if not outcome.get("file_ids"):
             local = stage_file(workspace, book, control)
             workspace.save_result(book_id, provider, {"state": "uploading", "sha256": book["sha256"]})
-            uploaded = connector._run(["upload", str(local), "--parent-fid", parent])
+            uploaded = _quark_step(connector, ["upload", str(local), "--parent-fid", parent], '上传电子书', workspace, book_id)
             fids = (uploaded.get("data") or {}).get("fids") or []
             if not fids:
                 raise ValueError("上传结果未返回文件编号，需要到网盘核对")
             outcome = {"state": "uploaded", "file_ids": fids, "sha256": book["sha256"], "parent_fid": parent}
             workspace.save_result(book_id, provider, outcome)
-        shared = connector._run(["share", *[str(fid) for fid in outcome["file_ids"]], "--title", meta["title"], "--url-type", "1", "--expired-type", "1"], timeout=120)
+        shared = _quark_step(connector, ["share", *[str(fid) for fid in outcome["file_ids"]], "--title", meta["title"], "--url-type", "1", "--expired-type", "1"], '生成分享链接', workspace, book_id, timeout=120)
         data = shared.get("data") or {}
         if not data.get("share_url"):
             raise ValueError("文件已上传，分享尚未生成；重试只创建分享")
@@ -248,6 +282,21 @@ def upload_book(workspace, book_id, provider, config, credentials, control=None,
         raise ValueError("暂不支持此网盘")
     workspace.save_result(book_id, provider, outcome)
     return outcome
+
+
+def sync_fingerprint(record, site_url, site_id, publish=False, overwrite=False):
+    payload = {"book": record, "site_url": site_url.rstrip("/"), "site_id": site_id,
+               "publish": bool(publish), "overwrite": bool(overwrite)}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def cover_is_current(book, state, config):
+    if not book.get("cover_path") or not book.get("cover_version"):
+        return False
+    key = f"books/{book['book_id']}/{book['cover_version']}/cover.webp"
+    return (state.get("state") == "verified" and state.get("version") == book["cover_version"]
+            and state.get("account") == config.get("r2_account") and state.get("bucket") == config.get("r2_bucket")
+            and state.get("url") == str(config.get("r2_public") or "").rstrip("/") + "/" + key)
 
 
 class SiteClient:
@@ -295,18 +344,51 @@ class SiteClient:
         data = {"schema_version": "2.0", "export_id": uuid.uuid4().hex, "workspace_id": self.workspace.setting("workspace_id"), "site_id": expected, "books": books}
         OrganizerPackage.model_validate(data)
         result = self.request("POST", "/preview", data)
+        result["_client_books"] = {book["book_id"]: book for book in books}
+        result["_client_site_url"] = self.base
         self.workspace.set_setting("last_site_preview", {"site_url": self.base, "site_id": expected, "preview": result})
         return result
 
     def commit(self, preview, choices, control=None, progress=lambda _: None):
+        from app.services.organizer_contract import CommitChoices
+        from .safeio import Cancelled
+        CommitChoices.model_validate({"choices": choices})
         control = control or Control()
-        result = None
+        expected = self.config.get("site_id")
+        if preview.get("site_id", expected) != expected or preview.get("_client_site_url", self.base) != self.base:
+            raise ValueError("预检不属于当前网站，请重新预检")
+        result = {"site_id": expected, "export_id": preview["export_id"], "items": {}}
         # 逐本提交便于取消、保存回执，并避免整批检测超过代理请求时限。
         for index, choice in enumerate(choices):
             control.check()
             progress(f"网站提交：{index + 1}/{len(choices)}")
-            result = self.request("POST", f"/batches/{preview['export_id']}/commit", {"choices": [choice]})
-            self._save_receipt(result)
+            bid = choice["book_id"]
+            try:
+                if "_client_books" in preview:
+                    book = self.workspace.book(bid)
+                    if not book:
+                        raise ValueError("图书已从本地书库移除，请重新预检")
+                    record = preview["_client_books"].get(bid)
+                    if book["excluded"] or book["status"] in {"failed", "blocked"} or record != public_record(self.workspace, book):
+                        raise ValueError("图书资料或状态在预检后发生变化，请重新预检")
+                response = self.request("POST", f"/batches/{preview['export_id']}/commit", {"choices": [choice]})
+                if response.get("site_id") != expected:
+                    raise ValueError("回执站点编号不一致")
+                item = dict(response.get("items", {}).get(bid) or {"status": "error", "message": "网站没有返回此书的回执"})
+                if item.get("status") == "ok":
+                    record = preview.get("_client_books", {}).get(bid)
+                    if record:
+                        item["_sync_fingerprint"] = sync_fingerprint(record, self.base, expected, choice.get("publish"), choice.get("overwrite"))
+                        item["_site_url"] = self.base
+                else:
+                    item["status"] = "error"
+            except Cancelled:
+                raise
+            except (ValueError, httpx.HTTPError) as exc:
+                item = {"status": "error", "message": str(exc)[:500]}
+            result["items"][bid] = item
+            if "_client_books" not in preview or self.workspace.book(bid):
+                self._save_receipt({"site_id": expected, "items": {bid: item}})
         return result
 
     def _save_receipt(self, result):

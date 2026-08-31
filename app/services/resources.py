@@ -6,9 +6,15 @@ from datetime import datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.models import Category, ChannelShareLink, Provider, Resource, ResourceChannel
-from app.models.base import utcnow
 from app.services.text import clean_isbn, normalize_title, slugify
+from app.services.publication import apply_publication_gate
+
+
+def resource_public_url(resource_id: int) -> str:
+    """公开详情页只使用本站配置域名和不可变的数据库编号。"""
+    return f"{get_settings().public_base_url.rstrip('/')}/book/id/{resource_id}"
 
 
 def unique_slug(db: Session, title: str, current_id: int | None = None) -> str:
@@ -49,17 +55,17 @@ def create_resource(db: Session, data: dict[str, object]) -> Resource:
         description=_optional(data.get("description")),
         formats=_optional(data.get("formats")),
         cover_image=_optional(data.get("cover_image")),
-        copyright_status=str(data.get("copyright_status") or "authorized"),
+        copyright_status=str(data.get("copyright_status") or "pending"),
         source_reference=_optional(data.get("source_reference")),
         publish_status=str(data.get("publish_status") or "draft"),
         seo_title=_optional(data.get("seo_title")),
         seo_description=_optional(data.get("seo_description")),
+        metadata_locked=bool(data.get("metadata_locked", False)),
     )
-    if resource.publish_status == "published":
-        resource.published_at = utcnow()
     category_ids = [int(value) for value in data.get("category_ids", []) if str(value).isdigit()]
     if category_ids:
         resource.categories = list(db.scalars(select(Category).where(Category.id.in_(category_ids))))
+    apply_publication_gate(resource)
     db.add(resource)
     db.flush()
     return resource
@@ -71,7 +77,7 @@ def update_resource(db: Session, resource: Resource, data: dict[str, object]) ->
         raise ValueError("书名不能为空")
     resource.title = title
     resource.normalized_title = normalize_title(title)
-    resource.slug = unique_slug(db, str(data.get("slug") or title), resource.id)
+    # ID 网址不随书名变化；旧 slug 也保留，用于兼容历史链接。
     for field in (
         "resource_type",
         "subtitle",
@@ -92,18 +98,19 @@ def update_resource(db: Session, resource: Resource, data: dict[str, object]) ->
             setattr(resource, field, str(value).strip() if value not in {None, ""} else None)
     resource.resource_type = resource.resource_type or "book"
     resource.language = resource.language or "zh-CN"
-    resource.copyright_status = resource.copyright_status or "authorized"
-    resource.isbn = clean_isbn(_optional(data.get("isbn")))
-    resource.publish_year = _int_or_none(data.get("publish_year"))
+    resource.copyright_status = resource.copyright_status or "pending"
+    if "metadata_locked" in data:
+        resource.metadata_locked = bool(data["metadata_locked"])
+    if "isbn" in data:
+        resource.isbn = clean_isbn(_optional(data.get("isbn")))
+    if "publish_year" in data:
+        resource.publish_year = _int_or_none(data.get("publish_year"))
     if "publish_status" in data:
-        old_status = resource.publish_status
         resource.publish_status = str(data.get("publish_status") or "draft")
-        if resource.publish_status == "published" and old_status != "published":
-            resource.published_at = resource.published_at or utcnow()
-    category_ids = [int(value) for value in data.get("category_ids", []) if str(value).isdigit()]
-    resource.categories = (
-        list(db.scalars(select(Category).where(Category.id.in_(category_ids)))) if category_ids else []
-    )
+    if "category_ids" in data:
+        category_ids = [int(value) for value in data.get("category_ids", []) if str(value).isdigit()]
+        resource.categories = list(db.scalars(select(Category).where(Category.id.in_(category_ids)))) if category_ids else []
+    apply_publication_gate(resource)
     db.flush()
     return resource
 
@@ -111,16 +118,7 @@ def update_resource(db: Session, resource: Resource, data: dict[str, object]) ->
 def visible_resource_query():
     return (
         select(Resource)
-        .join(ResourceChannel, ResourceChannel.resource_id == Resource.id)
-        .join(ChannelShareLink, ChannelShareLink.channel_id == ResourceChannel.id)
-        .join(Provider, Provider.id == ResourceChannel.provider_id)
-        .where(
-            Resource.publish_status == "published",
-            ResourceChannel.status == "active",
-            Provider.status == "active",
-            ChannelShareLink.status == "active",
-            ChannelShareLink.is_visible.is_(True),
-        )
+        .where(Resource.publish_status == "published")
         .options(selectinload(Resource.categories), selectinload(Resource.channels))
         .distinct()
     )

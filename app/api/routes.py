@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models import AdminUser
-from app.services.resources import search_resources
+from app.services.resources import resource_public_url, search_resources
 
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
@@ -38,6 +38,7 @@ def resource_search(q: str = Query(min_length=1, max_length=120), db: Session = 
                 "title": item.title,
                 "author": item.author,
                 "slug": item.slug,
+                "detail_url": resource_public_url(item.id),
                 "formats": item.formats,
             }
             for item in resources

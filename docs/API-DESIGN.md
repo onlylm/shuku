@@ -15,12 +15,15 @@
 | `/search?q=...` | 搜索 |
 | `/category/{slug}` | 分类页 |
 | `/collections` | 合集入口 |
-| `/book/{slug}` | 图书详情 |
+| `/book/id/{resource_id}` | 固定 ID 图书详情；改书名不改变此地址 |
+| `/book/{slug}` | 旧书名地址，已发布图书返回 301 跳转到 ID 地址 |
 | `/go/{link_id}` | 验证可用入口、记录跳转并返回 302；不可用返回 410 |
 | `/disclaimer` | 资源与免责声明 |
 | `/robots.txt`、`/sitemap.xml` | 搜索引擎端点 |
 
 源码：[前台路由](../app/web/routes.py)。没有独立的 `/authors/{slug}`、`/tutorials/{slug}` 或公开用户评论接口。
+
+新旧图书地址同时支持 HEAD（不累计浏览次数）。草稿、归档和不存在的图书均返回 404。旧地址按原 `slug` 精确查找，纯数字书名不会被当作资源 ID。旧别名字段继续保留，不随改书名清空或重生成。
 
 ## 后台页面与表单
 
@@ -53,6 +56,8 @@
 | GET `/api/v1/resources/search?q=...` | 可见资源摘要，最多 20 项 |
 
 搜索响应的 `total` 是本次返回项数，不是全库匹配数。源码：[普通 API](../app/api/routes.py)。
+
+资源摘要增加 `detail_url`，使用站点配置域名及 `/book/id/{id}`；原 `id` 和 `slug` 字段保留兼容。新调用方应直接使用 `detail_url`，不再根据书名或 `slug` 拼接详情页地址。
 
 ## 整理工具同步 API
 

@@ -18,6 +18,9 @@ FORBIDDEN_PATHS = {
     "docs/后续开发与上线总计划.md",
     "docs/本地整理软件验收报告.md",
     "docs/桌面整理软件技术文档.md",
+    "docs/桌面V8批量整理说明.md",
+    "docs/桌面V8.1书名分类说明.md",
+    "docs/桌面V9简介书单说明.md",
 }
 FORBIDDEN_SUFFIXES = {".db", ".sqlite3", ".epub", ".mobi", ".azw3", ".azw", ".pdf", ".docx", ".pem", ".key", ".pfx", ".pyc"}
 PATTERNS = {
@@ -40,7 +43,7 @@ def is_private_path(name: str) -> bool:
         or path.suffix.lower() in FORBIDDEN_SUFFIXES
         or (path.name.startswith(".env") and not path.name.endswith(".example"))
         or ".db-" in path.name or ".sqlite3-" in path.name
-        or path.parts[:2] in {("samples", "organizer"), ("docs", "internal")}
+        or path.parts[:2] in {("samples", "organizer"), ("docs", "internal"), ("deploy", "control"), ("deploy", "domains")}
     )
 
 

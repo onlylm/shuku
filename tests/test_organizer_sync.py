@@ -47,14 +47,17 @@ def test_preview_commit_idempotency_and_draft(client, db_session):
     assert db_session.scalar(select(OrganizerIdentity)).epub_sha256 == "a" * 64
 
 
-def test_rights_pending_blocked(client, db_session):
+def test_rights_pending_saved_as_draft(client, db_session):
     headers, data = auth(db_session), package()
     data["books"][0]["rights_review_status"] = "pending"
     response = client.post("/api/v1/organizer/preview", json=data, headers=headers)
-    assert response.json()["rows"][0]["error"]
+    assert response.json()["rows"][0]["error"] is None
+    assert response.json()["rows"][0]["warnings"]
     result = client.post(f"/api/v1/organizer/batches/{data['export_id']}/commit", json={"choices": [{"book_id": data["books"][0]["book_id"], "action": "create"}]}, headers=headers)
-    assert next(iter(result.json()["items"].values()))["status"] == "error"
-    assert db_session.scalar(select(Resource)) is None
+    assert next(iter(result.json()["items"].values()))["status"] == "ok"
+    resource = db_session.scalar(select(Resource))
+    assert resource.publish_status == "draft"
+    assert resource.copyright_status == "pending"
 
 
 def test_site_and_cover_validation(client, db_session):
@@ -106,7 +109,7 @@ def test_binding_preserves_existing_slug_and_nonempty_fields(client, db_session)
     data["books"][0]["publisher"] = "待补出版社"
     client.post("/api/v1/organizer/preview", json=data, headers=headers)
     result = client.post(f"/api/v1/organizer/batches/{data['export_id']}/commit", json={"choices": [{"book_id": data["books"][0]["book_id"], "action": "bind", "resource_id": resource.id}]}, headers=headers)
-    assert next(iter(result.json()["items"].values()))["status"] == "ok"
+    assert next(iter(result.json()["items"].values()))["status"] == "ok", result.json()
     db_session.refresh(resource)
     assert resource.author == "人工维护作者" and resource.publisher == "待补出版社"
     assert (resource.slug, resource.resource_code) == (original_slug, original_code)
@@ -136,7 +139,7 @@ def test_publish_requires_fresh_success_not_old_active(client, db_session, monke
     client.post("/api/v1/organizer/preview", json=data, headers=headers)
     result = client.post(f"/api/v1/organizer/batches/{data['export_id']}/commit", json={"choices": [{"book_id": data["books"][0]["book_id"], "action": "bind", "resource_id": resource.id, "publish": True}]}, headers=headers)
     row = next(iter(result.json()["items"].values()))
-    assert row["status"] == "ok" and row["publish_status"] == "draft"
+    assert row["status"] == "ok" and row["publish_status"] == "draft", row
 
 
 def test_token_creation_requires_csrf(admin_client):

@@ -1,0 +1,6 @@
+{% extends "admin/base.html" %}{% block title %}确认分类合并{% endblock %}{% block content %}
+<div class="page-heading"><div><h1>分类合并预览</h1><p>{{ preview.source_name }} → {{ preview.target_name }}</p></div></div>
+<section class="admin-card"><p>将调整 {{ preview.rows|length }} 本图书的分类，并保护这些人工确认后的分类。不会删除图书、改变书籍网址或删除旧分类记录。旧分类网址会永久跳转到目标页。</p><p>同名来源映射也会保存。若图书原本存在其他分类分支，会保留它们并在发布检查中提示，不盲目清空。</p>
+<div class="table-responsive"><table class="recent-table"><thead><tr><th>图书</th><th>修改前分类编号</th><th>修改后分类编号</th></tr></thead><tbody>{% for r in preview.rows %}<tr><td>{{ r.title }}</td><td>{{ r.before|join(', ') }}</td><td>{{ r.after|join(', ') }}</td></tr>{% else %}<tr><td colspan="3">没有关联图书，仅合并分类入口。</td></tr>{% endfor %}</tbody></table></div>
+<form action="{{ url_for('admin_category_merge') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="source_id" value="{{ preview.source_id }}"><input type="hidden" name="target_id" value="{{ preview.target_id }}"><input type="hidden" name="fingerprint" value="{{ preview.fingerprint }}"><button class="btn btn-primary">确认合并 {{ preview.rows|length }} 本的分类</button> <a class="btn btn-secondary" href="{{ url_for('admin_category_governance') }}">取消，不修改</a></form>
+</section>{% endblock %}

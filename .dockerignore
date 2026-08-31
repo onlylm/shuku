@@ -30,6 +30,8 @@ backups
 tests
 docs
 deploy/.env
+deploy/control
+deploy/domains
 app/static/covers/*
 !app/static/covers/.gitkeep
 Ebook.spec

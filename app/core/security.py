@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import hashlib
 import time
 from collections import defaultdict, deque
 
@@ -34,8 +35,18 @@ def current_admin(request: Request, db: Session) -> AdminUser | None:
     user_id = request.session.get("admin_user_id")
     if not user_id:
         return None
-    user = db.get(AdminUser, int(user_id))
-    return user if user and user.is_active else None
+    try:
+        user = db.get(AdminUser, int(user_id))
+    except (ValueError, TypeError):
+        return None
+    expected = session_fingerprint(user) if user else ""
+    supplied = str(request.session.get("admin_auth", ""))
+    return user if user and user.is_active and secrets.compare_digest(expected, supplied) else None
+
+
+def session_fingerprint(user: AdminUser) -> str:
+    # 改用户名或密码（包括命令行重置）后，所有旧会话立即失效。
+    return hashlib.sha256((user.username + ":" + user.password_hash).encode()).hexdigest()
 
 
 def require_admin(request: Request, db: Session) -> AdminUser:

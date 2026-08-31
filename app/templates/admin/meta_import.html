@@ -25,14 +25,14 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <div class="upload-icon">⇧</div>
     <h2>选择书目表格</h2>
-    <p>支持 Excel 或 CSV，最大 5MB；表头至少包含「书名」或「ISBN」其中一列。</p>
+    <p>支持 Excel 或 CSV，最大 5MB；表头至少包含「系统编号」「书名」或「ISBN」其中一列。</p>
     <input class="input" type="file" name="file" accept=".xlsx,.csv" required>
     <button class="btn btn-primary">解析并匹配</button>
   </form>
   <div class="panel-note">
     <h3>匹配顺序</h3>
     <ul class="trust-list">
-      <li><span class="check-dot">✓</span> ISBN → 文件名 → 书名+作者 → 书名精确 → 书名相似</li>
+      <li><span class="check-dot">✓</span> 系统编号优先（有编号时禁止回退匹配其他书）→ 无编号才按唯一 ISBN → 文件名 → 书名+作者 → 书名精确 → 书名相似</li>
       <li><span class="check-dot">✓</span> 「书名 - 作者.epub」会自动拆开，和云盘上传时的解析一致</li>
       <li><span class="check-dot">✓</span> 相似度匹配的行默认不勾选，需要你确认后再导入</li>
       <li><span class="check-dot">✓</span> 默认只填补空缺字段，已有数据不会被覆盖</li>
@@ -40,8 +40,8 @@
     <h3>支持的列名</h3>
     <ul class="trust-list">
       <li><span class="check-dot">✓</span> 中文：书名、文件名、作者、出版社、出版年份、简介、语言、格式、分类</li>
-      <li><span class="check-dot">✓</span> 两级分类：主分类 + 子类 两列，子类自动挂到对应主分类下</li>
-      <li><span class="check-dot">✓</span> 单列多分类：用 、,，/|;； 隔开，例如「心理学、成长」</li>
+      <li><span class="check-dot">✓</span> 两级分类：主分类 + 子类 两列，只匹配网站已有分类或管理员保存的来源映射</li>
+      <li><span class="check-dot">✓</span> 每本书只维护一个一级分类与至多一个二级分类，不自动创建或模糊合并分类</li>
       <li><span class="check-dot">✓</span> Calibre 导出：title、authors、publisher、pubdate、comments、languages、formats、isbn</li>
     </ul>
     <p class="form-hint">Calibre 的 tags 列不会导入：里面多是「公众号：xxx」「电子书免费赠送」这类来源标记，会污染分类。要导分类请另建「分类」或「主分类/子类」列。</p>
