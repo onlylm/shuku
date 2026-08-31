@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # 无头测试：用桌面整理软件已有的 upload_cover 上传一本封面到 Cloudflare R2。
 # 用法（项目 venv）：
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\r2_upload_test.py --dry-run
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\r2_upload_test.py --confirm
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\r2_upload_test.py --book-id BK_xxx --confirm
+#   .venv\Scripts\python.exe scripts\r2_upload_test.py --dry-run
+#   .venv\Scripts\python.exe scripts\r2_upload_test.py --confirm
+#   .venv\Scripts\python.exe scripts\r2_upload_test.py --book-id BK_xxx --confirm
 # 默认取工作区里第一本“有封面”的书；--dry-run 只校验配置不写 R2；--confirm 才真正 PUT。
 import argparse
 import sys

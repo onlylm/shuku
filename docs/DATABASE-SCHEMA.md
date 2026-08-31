@@ -1,178 +1,65 @@
-# 数据库设计（阶段0）
+# 数据模型
 
-> MySQL 8、SQLAlchemy 2.x、Alembic；本文定义阶段1所需核心关系。
+以 [SQLAlchemy 模型](../app/models/entities.py) 和 [Alembic 迁移](../alembic/versions/) 为准。本页是维护索引，不是可直接执行的建表 SQL。
 
-## 1. 设计原则
-
-- 一本书或一个合集只对应一条内部资源和一个 SEO 详情页。
-- 文件格式、渠道资源、平台文件和分享链接分别建模，禁止复用同一编号。
-- 百度、夸克只作为 `providers` 数据，不在 `resources` 增加固定字段。
-- 原始导入行永久可追溯，只有确认后的数据进入正式表。
-- 重复和错链同时由业务校验与数据库唯一约束兜底。
-- 表中时间统一存储 UTC，页面按 Asia/Shanghai 展示。
-
-## 2. 核心关系
+## 核心关系
 
 ```text
-resources 1 ── N resource_files
-resources N ── N categories
-resources 1 ── N resource_channels
-providers 1 ── N provider_accounts
-providers 1 ── N resource_channels
-resource_channels 1 ── N channel_share_links
-channel_share_links 1 ── N link_check_logs
-channel_share_links 1 ── N link_clicks
-import_batches 1 ── N import_raw_rows
-import_raw_rows 1 ── N import_errors
+resources（图书）
+  ├─ resource_categories ↔ categories（分类）
+  ├─ resource_files（文件记录）
+  └─ resource_channels（图书的平台渠道）
+       ├─ providers（平台）
+       ├─ provider_accounts（可选账号引用）
+       └─ channel_share_links（分享入口）
+            └─ link_check_logs（检测记录）
 ```
 
-## 3. 资源表
+一本书可关联多个分类、多个网盘平台；同一本书与同一个平台只有一条渠道记录，渠道下可以有多条分享入口。
 
-### `resources`
+## 表索引
 
-| 字段 | 类型建议 | 说明 |
-|---|---|---|
-| id | BIGINT PK | 内部主键 |
-| resource_code | VARCHAR(32) UNIQUE | 例如 B000001/C000001 |
-| resource_type | VARCHAR(20) | book/tutorial/collection |
-| title | VARCHAR(255) | 展示标题 |
-| normalized_title | VARCHAR(255) INDEX | 匹配用标准标题 |
-| slug | VARCHAR(255) UNIQUE | SEO路径 |
-| subtitle | VARCHAR(255) NULL | 副标题 |
-| author/translator/publisher | VARCHAR(255) NULL | 事实字段，不允许AI猜测 |
-| isbn | VARCHAR(32) NULL INDEX | 规范化ISBN |
-| language | VARCHAR(32) NULL | 语言 |
-| publish_year | SMALLINT NULL | 出版年份 |
-| description | TEXT NULL | 审核后的简介 |
-| seo_title | VARCHAR(255) NULL | SEO标题 |
-| seo_description | VARCHAR(320) NULL | SEO描述 |
-| cover_image | VARCHAR(500) NULL | 站内相对路径或允许的资源 |
-| copyright_status | VARCHAR(32) | public_domain/open_license/authorized |
-| source_reference | VARCHAR(500) NULL | 内容或授权来源引用 |
-| publish_status | VARCHAR(20) INDEX | draft/review/published/hidden/invalid/removed |
-| view_count | BIGINT | 默认0 |
-| published_at | DATETIME NULL | 发布时间 |
-| created_at/updated_at | DATETIME | 审计时间 |
+| 表 | 用途 |
+| --- | --- |
+| `admin_users` | 管理员、密码哈希、启用状态 |
+| `categories` | 分类名称、slug、父分类、排序、可见性 |
+| `resources` | 书名、作者、ISBN、简介、封面、版权记录、发布与 SEO 字段 |
+| `resource_categories` | 资源与分类的多对多关联 |
+| `resource_files` | 文件名、格式、大小、路径及哈希记录 |
+| `providers` | 网盘名称、代码、状态和能力描述 |
+| `provider_accounts` | 账号标签、凭据引用和状态 |
+| `resource_channels` | 资源在一个网盘上的渠道及远端文件编号 |
+| `channel_share_links` | 分享地址、提取码、状态、可见性和检测时间 |
+| `link_check_logs` | 每次检测的结果、耗时与错误摘要 |
+| `link_clicks` | 网盘跳转记录 |
+| `search_queries` | 搜索词和结果数量 |
+| `import_batches`、`import_raw_rows`、`import_errors` | 表格批次、原始行、预检及错误记录 |
+| `background_tasks` | 后台任务的参数、状态、结果与错误 |
+| `friend_links` | 友情链接及排序、可见性 |
+| `admin_operation_logs` | 后台操作审计记录 |
+| `organizer_tokens` | 整理工具同步授权的哈希及启用状态 |
+| `organizer_identities` | 本地图书稳定编号与网站资源的对应关系 |
+| `organizer_batches` | 同步包、预检和逐本提交回执 |
 
-发布前必须具有非空标题、唯一 slug、已确认的版权状态和至少一条可用渠道链接。
+账号引用字段不代表可以保存明文密码。原始导入行、分享地址、同步数据与备份都应视为运营数据，不公开提交。
 
-### `resource_files`
+## 关键约束与状态
 
-保存一本书的 PDF、EPUB、MOBI 等格式。`file_hash` 在非空时唯一，用于避免相同文件重复上传。
+- `resources.resource_code` 与 `resources.slug` 唯一；ISBN 有索引但不是唯一键。
+- `categories.slug` 唯一，分类名称本身不保证唯一；维护同名分类时需确认父级。
+- `resource_channels` 对 `resource_id + provider_id` 有唯一约束。
+- `channel_share_links.normalized_url_hash` 全局唯一；分享编号有索引，不能仅凭索引推断为唯一约束。
+- `import_raw_rows` 的 `batch_id + row_number` 唯一。
+- `organizer_identities.book_id` 为主键，`resource_id` 唯一；同步依赖稳定编号、版本和内容哈希。
 
-关键字段：`resource_id`、`source_resource_id`、`file_format`、`file_size`、`file_hash`、`local_relative_path`、`source_type`、`source_reference`、`source_batch_id`、`processing_status`、时间字段。
+资源默认草稿，分享链接默认待检测且隐藏。**传统链接表格导入会将新资源记录设为已发布，但新链接仍待检测、隐藏**；不能把它与整理工具默认草稿的同步行为混为一谈。
 
-### `categories` 与 `resource_categories`
+版权字段是操作者填写的记录，不是系统核验结果；部分旧录入路径会默认填“已获授权”，运营时必须主动核对。完整边界见 [已知问题与使用限制](已知问题与使用限制.md)。
 
-分类支持父子结构。`categories.slug` 唯一；关联表使用 `(resource_id, category_id)` 联合主键，避免重复分类。
+## 迁移和备份
 
-## 4. 渠道与链接
+本地开发使用 Alembic 升级；生产通过 `sudo bash deploy.sh` 或 `sudo bash deploy.sh update` 执行迁移。不要直接改数据库表结构来替代迁移。
 
-### `providers`
+初始迁移使用冻结的结构快照，后续版本逐步增加字段和表。不要修改已执行迁移、清空版本表或删库来处理升级问题。
 
-| 字段 | 说明 |
-|---|---|
-| code | 全局唯一；首批 `baidu`、`quark` |
-| name/icon/base_domain | 展示配置 |
-| status/sort_order | 启停与排序 |
-| supports_upload/share/check | 平台能力开关 |
-| capabilities_json | 未来能力扩展，不保存秘密 |
-
-### `provider_accounts`
-
-保存账号别名和凭据引用，不保存明文密码、Cookie或Token。唯一约束建议为 `(provider_id, account_alias)`。
-
-### `resource_channels`
-
-表示内部资源在某个平台和账号下的对应对象。关键字段为 `resource_id`、`provider_id`、`account_id`、`channel_resource_code`、`provider_file_id`、`metadata_json`、`status`、`priority`。
-
-唯一约束：
-
-```text
-(provider_id, channel_resource_code)
-(provider_id, provider_file_id)  -- provider_file_id 非空时
-```
-
-### `channel_share_links`
-
-| 字段 | 说明 |
-|---|---|
-| channel_resource_id | 所属渠道资源 |
-| provider_share_id | 平台分享ID |
-| share_url | 原始分享URL，仅后台使用 |
-| normalized_url | 规范化URL |
-| normalized_url_hash | SHA-256，全局唯一 |
-| extract_code | 可空提取码，后台按权限展示 |
-| is_primary/is_visible | 主链接及前台显示许可 |
-| status | unchecked/active/suspected/invalid/blocked/manual_review/disabled |
-| check_result | 最近检测摘要 |
-| last_checked_at/last_success_at | 检测时间 |
-| consecutive_failures/failure_reason | 失败信息 |
-| expires_at/disabled_at | 生命周期 |
-| created_at/updated_at | 审计时间 |
-
-唯一约束：
-
-```text
-UNIQUE(normalized_url_hash)
-UNIQUE(provider_id, provider_share_id)  -- 可通过冗余provider_id或关联校验实现
-```
-
-同一渠道资源最多一条 `is_primary=true` 的可见链接，由服务层在事务中维护。链接改绑不得直接更新外键，必须走“确认改绑”服务并记录操作日志。
-
-### `link_check_logs`
-
-每次检测保存 `link_id`、`status`、`http_status`、`result_code`、`result_message`、`checked_at`。历史日志不随当前状态覆盖。
-
-### `link_clicks`
-
-保存最小化统计：`link_id`、`resource_id`、`provider_id`、`referer_path`、`device_type`、`visitor_hash`、`is_known_bot`、`clicked_at`。不保存完整User-Agent或可长期识别用户的原始IP；访客哈希按周期轮换盐值。
-
-## 5. 导入表
-
-### `import_batches`
-
-保存文件名、文件类型、状态、总行数、已处理数、新建数、更新数、重复数、错误数、创建人、确认时间和时间字段。
-
-### `import_raw_rows`
-
-保存 `batch_id`、`row_number`、`raw_data_json`、标准化字段、识别平台、规范化链接哈希、匹配资源、匹配置信度、审核状态和处理结果。
-
-### `import_errors`
-
-保存 `raw_row_id`、`field_name`、`error_code`、`error_message`、`severity`。`blocking` 错误阻止提交，`warning` 允许管理员确认后继续。
-
-## 6. 搜索与审计
-
-### `search_queries`
-
-按 `normalized_query` 聚合，记录原始示例、结果数、搜索次数、无结果次数、最近时间、状态、匹配资源和管理员备注。短时间重复请求、明显机器人和禁止关键词不计入运营需求。
-
-### `admin_operation_logs`
-
-保存管理员、操作类型、对象类型、对象ID、变更摘要、请求ID和时间。敏感值仅记录“已改变”，不得记录密码、Token、Cookie和完整提取码。
-
-### `background_tasks`
-
-阶段1用于分批链接检测和错误重试。字段包括任务类型、状态、进度、幂等键、尝试次数、错误摘要、计划时间、开始/完成时间。
-
-## 7. 核心事务规则
-
-1. 导入提交：写资源、渠道、链接和审核日志必须在同一事务中完成。
-2. 替换链接：新链接先保存为 `unchecked`，检测成功后切换为 `active`；旧链接改为 `invalid/disabled` 并保留。
-3. 主备切换：同一渠道内原主链接与新主链接在一个事务中更新。
-4. 删除策略：业务资源默认软删除；原始导入、检测日志和操作日志不级联物理删除。
-5. 发布校验：没有有效可见链接的资源不能首次发布。
-
-## 8. 索引建议
-
-- `resources(normalized_title, publish_status)`
-- `resources(isbn)`
-- `resources(resource_type, published_at)`
-- `resource_channels(resource_id, provider_id, status)`
-- `channel_share_links(channel_resource_id, status, is_visible, priority)`
-- `link_check_logs(link_id, checked_at)`
-- `search_queries(zero_result_count, last_searched_at)`
-- `import_raw_rows(batch_id, review_status)`
-
-所有数据库变更只通过Alembic迁移，测试必须验证唯一约束、跨资源错链拦截和主备切换事务。
+Windows SQLite 文件不能直接放进 MySQL 数据卷。跨数据库迁移需要单独导出、转换、导入并校验。生产备份/恢复操作见 [Linux 配置与维护](Linux一键部署指南.md)。

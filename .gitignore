@@ -30,6 +30,19 @@ app/static/covers/*
 samples/organizer/
 screenshots/
 /交接文档.md
+# 本地内部资料与旧原型，不随公开源码发布
+/.private/
+/docs/internal/
+/PROJECT-REQUIREMENTS.md
+/DESIGN.md
+/prototype/
+/docs/PHASE-0-ACCEPTANCE.md
+/docs/PHASE-1-ACCEPTANCE.md
+/docs/PHASE-1-PLAN.md
+/docs/UI-DESIGN-SYSTEM.md
+/docs/后续开发与上线总计划.md
+/docs/本地整理软件验收报告.md
+/docs/桌面整理软件技术文档.md
 .mypy_cache/
 .ruff_cache/
 dist/

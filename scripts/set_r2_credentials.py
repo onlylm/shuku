@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 本地运行：配置桌面整理软件的 R2 封面上传凭据。
 # 用法（用项目 venv，避免编码/依赖问题）：
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\set_r2_credentials.py
+#   .venv\Scripts\python.exe scripts\set_r2_credentials.py
 # 说明：非密配置(r2_account/r2_bucket/r2_public)写入工作区 settings；
 #       AK/SK 通过 getpass 在本机终端输入，只写入 Windows 凭据库(EbookOrganizer/<workspace_id>)，
 #       不进聊天、不写进 settings 表、不落明文文件。

@@ -1,127 +1,68 @@
-# 系统架构设计（阶段0）
+# 系统架构
 
-> 状态：待验收  
-> 范围：个人运营、单次几十至几百本、先本地测试后部署至 Linux 服务器
+本文描述当前源码结构。部署操作见 [部署说明](部署说明.md)，开发环境见 [开发指南](开发指南.md)。
 
-## 1. 架构目标
+## 运行方式
 
-- 用最少的运行组件完成“表格导入—审核—发布—搜索—多渠道跳转—链接维护”闭环。
-- 资源核心模型与百度、夸克解耦，未来新增平台无需修改资源表和前台结构。
-- 重复链接、跨资源错链和未经审核的链接不得进入前台。
-- 第一版不引入 Redis、Celery、微服务或多节点部署。
-- 本地 Windows 与服务器 Linux 使用相同应用代码，路径、域名和凭据全部配置化。
-
-## 2. 逻辑架构
+正式部署由 `deploy.sh` 管理 `deploy/compose.yml` 中的三个服务：
 
 ```text
-访客浏览器
-  → Nginx（生产环境 HTTPS、静态资源、反向代理）
-  → FastAPI
-      ├─ Jinja2 前台页面与管理员页面
-      ├─ 资源/分类/搜索服务
-      ├─ 表格导入、匹配与审核服务
-      ├─ 渠道与分享链接服务
-      ├─ /go 跳转与基础统计服务
-      └─ 轻量巡检 Worker（独立进程，可选 APScheduler）
-  → SQLAlchemy 2.x
-  → MySQL 8
-
-本地文件目录
-  → 元数据识别
-  → 人工确认
-  → ProviderAdapter
-  → 百度/夸克官方能力（可用时）
+访客 / 管理员
+    ↓ HTTPS
+Caddy
+    ↓
+FastAPI + Jinja2
+    ↓
+SQLAlchemy → MySQL 8.4
 ```
 
-## 3. 部署单元
+Caddy 处理 HTTPS 和反向代理；FastAPI 返回前台、后台页面与少量 JSON 接口；Alembic 管理数据库结构。开发环境默认使用 SQLite。
 
-阶段1建议保留三个容器：
+目前是单台服务器、单网站进程设计。上传队列和链接巡检由应用内任务执行，没有独立 Redis、Celery 或分布式调度器。正式部署默认关闭云盘上传工作线程和自动巡检；不要直接增加网站进程或副本数量。
 
-1. `web`：FastAPI、Jinja2、后台管理与 API。
-2. `db`：MySQL 8。
-3. `nginx`：生产反向代理；本地开发可不启用。
+根目录 `docker-compose.yml` 与 `nginx/` 是保留的手动部署入口，新部署使用 `deploy.sh`，不要混用两套配置。
 
-阶段3按需要增加一个使用相同代码镜像的 `worker`，执行分批链接检测和周期任务，不新增 Redis。
+## 代码分工
 
-## 4. 模块边界
+| 目录 | 职责 |
+| --- | --- |
+| `app/main.py`、`app/core/` | 应用生命周期、环境配置、数据库连接与管理员认证 |
+| `app/web/`、`app/templates/web/` | 公开页面、搜索、详情、跳转与 SEO 端点 |
+| `app/admin/`、`app/templates/admin/` | 后台页面和表单操作 |
+| `app/api/` | 健康检查、搜索 JSON、整理工具同步接口 |
+| `app/services/` | 资源、导入、检测、上传、同步等业务逻辑 |
+| `app/providers/` | 网盘链接识别与平台适配 |
+| `app/models/`、`alembic/` | 数据模型与版本化迁移 |
+| `ebook_organizer/` | 独立的 Windows 整理工具源码 |
 
-```text
-app/
-├── main.py                 应用入口
-├── core/                   配置、安全、日志、数据库会话
-├── models/                 SQLAlchemy 模型
-├── schemas/                Pydantic 输入输出模型
-├── repositories/           数据访问
-├── services/               业务规则
-├── api/                    JSON API 与 /go
-├── web/                    前台路由
-├── admin/                  管理后台路由与认证
-├── importers/              XLSX/CSV 解析、预览和提交
-├── providers/              渠道注册表、链接解析器、适配器
-├── tasks/                  轻量任务与巡检
-├── templates/              Jinja2 模板
-└── static/                 构建后的 CSS、图片与脚本
-```
+路径均相对于仓库根目录。详细路由见 [接口说明](API-DESIGN.md)，表关系见 [数据模型](DATABASE-SCHEMA.md)。
 
-路由层不直接写数据库；资源匹配、链接改绑、主备切换等规则统一放在服务层。
+## 资料、封面和文件
 
-## 5. 渠道扩展机制
+- 网站数据库存放图书元数据、分类、分享入口、管理及同步记录。
+- 网站展示本地上传封面，或使用经配置允许的远程封面地址。
+- 本地整理工具可读取电脑上的 EPUB；同步接口接收资料和链接，不接收源文件绝对路径。
+- R2 用于封面对象，电子书上传至网盘是另一条独立流程，不属于网站部署步骤。
+- Linux 网站不能直接读取访客电脑上的目录。后台“扫描本地文件”中的本地，指运行网站程序的机器。
 
-渠道平台由 `providers` 表配置；代码侧使用注册表查找适配器：
+桌面工具与外部上传流程尚有限制，见 [已知问题与使用限制](已知问题与使用限制.md)。
 
-```python
-class ProviderAdapter:
-    code: str
+## 前台可见性
 
-    def recognize_url(self, url: str) -> bool: ...
-    def normalize_url(self, url: str) -> str: ...
-    def extract_share_id(self, url: str) -> str | None: ...
-    def check_link(self, url: str) -> object: ...
-    def upload(self, file_path: str) -> object: ...
-    def create_share(self, provider_file_id: str) -> object: ...
-```
+公开资源列表要求资源为 `published`，且至少一条链接同时满足：
 
-阶段1实现百度、夸克的 URL 识别、规范化和手工链接导入；上传与创建分享仅保留接口。任何自动能力必须以届时可用的官方接口为准。
+- 平台和资源渠道都是 `active`；
+- 分享链接状态为 `active`；
+- `is_visible=true`。
 
-## 6. 链接安全与前台显示
+详情页也检查有效入口；没有入口时返回 404。不可用的 `/go/{link_id}` 返回 410，不继续跳转。新导入链接默认 `pending` 且隐藏，检测结果决定后续可见性。
 
-- 原始链接只保存在后台；前台使用 `/go/{link_id}`。
-- 仅 `active` 且 `is_visible=true` 的链接参与前台选择。
-- `unchecked/suspected/invalid/blocked/manual_review/disabled` 均不显示。
-- 主链接失效后选择同渠道优先级最高的有效备用链接。
-- 一个渠道无可用链接时隐藏该渠道；全部渠道失效时显示“资源修复中”。
-- 已失效的 `/go/{link_id}` 不跳转，返回友好状态页并引导回资源详情。
+这些规则检查的是记录与链接状态，不会自动证明书目匹配正确、文件内容完整或分发授权有效。
 
-## 7. 导入与异步边界
+## 安全与维护边界
 
-单次最多几百行：解析、字段校验、链接规范化、数据库匹配和预览可在普通请求内完成。外部网盘检测不与导入预览绑定在同一长请求中，确认导入后按小批次执行并保存进度。
+管理员页面使用会话登录和表单 CSRF 校验；整理工具 JSON 接口使用可撤销的专用 Bearer 授权。两种授权方式不能混用。
 
-## 8. 安全基线
+生产环境要求正式 HTTPS 地址、强随机会话密钥和安全 Cookie。R2 与网盘凭据不应放进页面、仓库或书目清单。
 
-- 超级管理员密码使用 Argon2id 或同等级安全哈希。
-- Session Cookie 使用 `HttpOnly`、`SameSite=Lax`，生产环境开启 `Secure`。
-- 写接口具有 CSRF 防护；登录、搜索、反馈和 `/go` 有频率限制。
-- 只允许渠道白名单域名，禁止开放重定向。
-- Token、Cookie、密码不得写入代码、日志或普通业务字段。
-- 管理后台和搜索参数页设置 `noindex`。
-
-## 9. 环境迁移
-
-关键配置：
-
-```env
-APP_ENV=development
-DATABASE_URL=mysql+pymysql://...
-PUBLIC_BASE_URL=http://localhost:8000
-LOCAL_STORAGE_ROOT=D:/ebook-transfer
-SESSION_SECRET=replace-me
-ENABLE_SCHEDULER=false
-```
-
-生产服务器只改变环境变量与卷挂载，例如将 `LOCAL_STORAGE_ROOT` 改为 `/data/ebook-transfer`。
-
-## 10. 当前决策与待确认项
-
-已确认：百度与夸克为首批渠道；预留其他渠道；个人运营；表格导入；AI 只辅助；疑似记录人工确认；先本地测试、后部署服务器；只处理公版、开放许可或已授权内容。
-
-阶段0无阻塞问题。进入阶段1前需准备 Python 3.12、Docker Desktop，并最终确定正式域名和管理员初始化方式。
+数据库、运行数据、网站上传封面和 Caddy 证书使用独立数据卷。备份覆盖范围、异地保存和恢复注意事项见 [Linux 配置与维护](Linux一键部署指南.md)。

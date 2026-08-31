@@ -1,4 +1,8 @@
 .git
+.private
+PROJECT-REQUIREMENTS.md
+DESIGN.md
+交接文档.md
 .venv
 __pycache__
 .pytest_cache

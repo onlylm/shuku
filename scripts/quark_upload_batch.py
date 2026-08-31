@@ -24,7 +24,7 @@ from ebook_organizer.workspace import Workspace
 from ebook_organizer.connections import Credentials, quark_connector, upload_book
 
 WS_PATH = Path.home() / "AppData" / "Local" / "EbookOrganizer" / "workspace"
-CLI = r"D:\网盘拉新\runtime\cloud-connectors\quark-1.0.15\scripts\quark-drive.cjs"
+CLI = str(ROOT / "runtime" / "cloud-connectors" / "quark-1.0.15" / "scripts" / "quark-drive.cjs")
 
 
 def qualifies(book):

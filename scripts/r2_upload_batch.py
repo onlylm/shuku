@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # 批量把工作区里有封面的书传到 Cloudflare R2（复用 connections.upload_cover）。
 # 用法（项目 venv）：
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\r2_upload_batch.py --limit 5   # 先小批试 5 本
-#   D:\网盘拉新\.venv\Scripts\python.exe D:\网盘拉新\scripts\r2_upload_batch.py             # 全量（可断点续传）
+#   .venv\Scripts\python.exe scripts\r2_upload_batch.py --limit 5   # 先小批试 5 本
+#   .venv\Scripts\python.exe scripts\r2_upload_batch.py             # 全量（可断点续传）
 # 说明：state 已 verified 的书自动跳过；失败记录到 workspace events，不影响其他书。
 import argparse
 import sys

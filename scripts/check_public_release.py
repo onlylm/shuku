@@ -6,7 +6,19 @@ import subprocess
 from pathlib import PurePosixPath
 
 
-FORBIDDEN_DIRS = {"runtime", "backups", "uploads", "screenshots", ".venv", "dist", "build", ".study", "__pycache__"}
+FORBIDDEN_DIRS = {"runtime", "backups", "uploads", "screenshots", ".venv", "dist", "build", ".study", ".private", "prototype", "__pycache__"}
+FORBIDDEN_PATHS = {
+    "交接文档.md",
+    "PROJECT-REQUIREMENTS.md",
+    "DESIGN.md",
+    "docs/PHASE-0-ACCEPTANCE.md",
+    "docs/PHASE-1-ACCEPTANCE.md",
+    "docs/PHASE-1-PLAN.md",
+    "docs/UI-DESIGN-SYSTEM.md",
+    "docs/后续开发与上线总计划.md",
+    "docs/本地整理软件验收报告.md",
+    "docs/桌面整理软件技术文档.md",
+}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite3", ".epub", ".mobi", ".azw3", ".azw", ".pdf", ".docx", ".pem", ".key", ".pfx", ".pyc"}
 PATTERNS = {
     "GitHub令牌": re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})"),
@@ -19,16 +31,25 @@ PATTERNS = {
 }
 
 
+def is_private_path(name: str) -> bool:
+    """与忽略规则配合，拦截被强制暂存的运营数据、内部资料和旧原型。"""
+    path = PurePosixPath(name)
+    return bool(
+        name in FORBIDDEN_PATHS
+        or set(path.parts) & FORBIDDEN_DIRS
+        or path.suffix.lower() in FORBIDDEN_SUFFIXES
+        or (path.name.startswith(".env") and not path.name.endswith(".example"))
+        or ".db-" in path.name or ".sqlite3-" in path.name
+        or path.parts[:2] in {("samples", "organizer"), ("docs", "internal")}
+    )
+
+
 def check() -> int:
     paths = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0")
     problems = []
     count = total = 0
     for name in filter(None, paths):
-        path = PurePosixPath(name)
-        if (set(path.parts) & FORBIDDEN_DIRS or path.suffix.lower() in FORBIDDEN_SUFFIXES
-                or (path.name.startswith(".env") and not path.name.endswith(".example"))
-                or ".db-" in path.name or ".sqlite3-" in path.name
-                or path.parts[:2] == ("samples", "organizer")):
+        if is_private_path(name):
             problems.append(f"不应公开的文件：{name}")
             continue
         content = subprocess.check_output(["git", "show", ":" + name])
