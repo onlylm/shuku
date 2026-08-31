@@ -29,9 +29,13 @@ def upgrade():
     )
     # 后台单书编辑有明确审计证据：升级后也保护这些人工编辑记录。
     # 不凭“已发布”推断人工审核，不改原版权/发布状态、编号、slug。
-    op.execute(sa.text("""UPDATE resources SET metadata_locked = true WHERE
+    # entity_id 是旧日志中的文本列。MySQL 8 的旧表可能使用 utf8mb4_unicode_ci，
+    # 新表达式默认使用 utf8mb4_0900_ai_ci，直接比较文本会因排序规则不同失败。
+    # 资源主键本来就是整数，因此按数值比较也更符合字段含义。
+    id_type = "UNSIGNED" if op.get_bind().dialect.name == "mysql" else "INTEGER"
+    op.execute(sa.text(f"""UPDATE resources SET metadata_locked = true WHERE
         EXISTS (SELECT 1 FROM admin_operation_logs l WHERE l.entity_type = 'resource'
-        AND l.action = 'update' AND l.entity_id = CAST(resources.id AS CHAR))"""))
+        AND l.action = 'update' AND CAST(l.entity_id AS {id_type}) = resources.id)"""))
 
 
 def downgrade():
