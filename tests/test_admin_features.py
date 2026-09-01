@@ -223,6 +223,14 @@ def test_batch_publish_checks_requirements_and_batch_draft(admin_client, db_sess
     link.status = "active"; link.is_visible = True
     db_session.commit()
     page = admin_client.get("/admin/resources")
+    soup = BeautifulSoup(page.text, "html.parser")
+    batch_form = soup.find("form", action=lambda value: value and value.endswith("/admin/resources/batch-delete"))
+    assert batch_form is not None and not batch_form.get("onsubmit")
+    publish_button = batch_form.select_one('button[value="publish"]')
+    delete_button = batch_form.select_one('button.btn-danger')
+    assert "将发布所有勾选" in publish_button.get("onclick", "")
+    assert "确定删除选中的资源" not in publish_button.get("onclick", "")
+    assert "确定删除选中的资源" in delete_button.get("onclick", "")
     token = BeautifulSoup(page.text, "html.parser").select_one('[name="csrf_token"]')["value"]
     response = admin_client.post("/admin/resources/batch-status", data={"csrf_token": token, "action": "publish",
         "selected_resource": [str(valid.id), str(invalid.id)]})

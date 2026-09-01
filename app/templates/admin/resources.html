@@ -39,13 +39,13 @@
     </select>
     <button class="btn btn-secondary">筛选</button>
   </form>
-  <form action="{{ url_for('admin_resources_batch_delete') }}" method="post" onsubmit="return confirm('确定删除选中的资源吗？关联的网盘入口、点击记录也会被清除，不可恢复。')">
+  <form action="{{ url_for('admin_resources_batch_delete') }}" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <div class="batch-actions">
       <label class="batch-select-all"><input type="checkbox" id="select-all-resources"> 全选本页</label>
       <button type="submit" class="btn btn-primary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="publish" onclick="return confirm('将发布所有勾选且通过版权、分类和网盘链接检查的资源，是否继续？')">批量发布</button>
       <button type="submit" class="btn btn-secondary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="draft" onclick="return confirm('将勾选资源从前台撤下并转为草稿，是否继续？')">批量转草稿</button>
-      <button type="submit" class="btn btn-danger btn-sm">批量删除</button>
+      <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定删除选中的资源吗？关联的网盘入口、点击记录也会被清除，不可恢复。')">批量删除</button>
     </div>
     <div class="table-responsive">
       <table class="recent-table">
