@@ -29,6 +29,38 @@ def publication_issues(resource) -> list[str]:
     return issues
 
 
+def publication_readiness_issues(resource) -> list[str]:
+    """返回真正阻止前台发布的全部原因，包括网盘入口状态。"""
+    issues = publication_issues(resource)
+    links = [link for channel in resource.channels if channel.status == "active" for link in channel.share_links]
+    usable_link = any(
+        link.status == "active" and link.is_visible
+        for link in links
+    )
+    if not usable_link:
+        statuses = {link.status for link in links}
+        if not links:
+            issues.append("尚未添加网盘链接")
+        elif "pending" in statuses:
+            issues.append("网盘链接等待检测")
+        elif "invalid" in statuses:
+            issues.append("网盘链接已失效，请更换后重新检测")
+        elif "error" in statuses:
+            issues.append("网盘链接连续检测异常，请查看检测详情")
+        else:
+            issues.append("缺少检测有效且前台可见的网盘链接")
+    return list(dict.fromkeys(issues))
+
+
+def publish_if_ready(resource) -> list[str]:
+    """资料和链接全部通过时自动发布；归档资源永不自动恢复。"""
+    issues = publication_readiness_issues(resource)
+    if not issues and resource.publish_status != "archived":
+        resource.publish_status = "published"
+        resource.published_at = resource.published_at or utcnow()
+    return issues
+
+
 def apply_publication_gate(resource) -> list[str]:
     issues = publication_issues(resource)
     if resource.publish_status == "published":

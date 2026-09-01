@@ -23,6 +23,7 @@ from app.core.security import csrf_token
 from app.services.presentation import language_label, provider_label, resource_type_label, status_label
 from app.services.link_monitor import link_monitor_loop
 from app.services.cloud_uploads import cloud_upload_worker_loop
+from app.services.resource_tasks import resource_task_worker_loop
 from app.web.routes import router as web_router
 from app.services.site_settings import bind_profile, template_profile
 from scripts.maintenance_protocol import current_version
@@ -39,11 +40,14 @@ def create_app() -> FastAPI:
         stop_event = asyncio.Event()
         monitor_task = None
         upload_task = None
+        resource_task = None
         # 环境开关控制是否启动工作线程；巡检计划与执行开关由后台动态读取。
         if settings.app_env == "production" or settings.link_check_automatic_enabled:
             monitor_task = asyncio.create_task(link_monitor_loop(stop_event))
         if settings.cloud_upload_worker_enabled:
             upload_task = asyncio.create_task(cloud_upload_worker_loop(stop_event))
+        if settings.app_env == "production":
+            resource_task = asyncio.create_task(resource_task_worker_loop(stop_event))
         try:
             yield
         finally:
@@ -56,6 +60,10 @@ def create_app() -> FastAPI:
                 upload_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await upload_task
+            if resource_task:
+                resource_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await resource_task
 
     app = FastAPI(
         title=settings.app_name,

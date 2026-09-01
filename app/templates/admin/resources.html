@@ -7,25 +7,17 @@
     <h1>资源管理</h1>
     <p>共 {{ pagination.total }} 条，每页显示 {{ pagination.per_page }} 条。</p>
   </div>
-  <a class="btn btn-primary" href="{{ url_for('admin_resource_new') }}">新增资源</a>
+  <div class="inline-actions"><a class="btn btn-secondary" href="{{ url_for('admin_resource_review') }}">打开资料处理</a><a class="btn btn-primary" href="{{ url_for('admin_resource_new') }}">新增资源</a></div>
 </div>
-{% if recent %}
-<section class="admin-card">
-  <div class="card-header"><div><h2>最近编辑</h2><p>最近更新的资源。</p></div><a class="text-link" href="{{ url_for('admin_resources') }}">全部资源 →</a></div>
-  <div class="table-responsive">
-    <table class="recent-table">
-      <thead><tr><th>资源</th><th>状态</th><th>更新时间</th></tr></thead>
-      <tbody>
-        {% for item in recent %}
-        <tr>
-          <td class="resource-cell"><span class="mini-cover">{{ item.title[0] }}</span><a href="{{ url_for('admin_resource_edit', resource_id=item.id) }}"><strong>{{ item.title }}</strong><small>{{ item.author or '作者待补充' }}</small></a></td>
-          <td><span class="status-badge status-{{ 'success' if item.publish_status == 'published' else 'neutral' }}">{{ status_label(item.publish_status) }}</span></td>
-          <td>{{ item.updated_at|dtformat('%m-%d %H:%M', site_timezone) }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+{% if resource_tasks %}
+<section class="admin-card upload-progress" role="status" aria-live="polite">
+  <div class="card-header"><div><h2>后台批量任务</h2><p>几千条资源会分批处理，任务运行时不影响继续使用网站。</p></div><a class="btn btn-secondary btn-sm" href="{{ request.url }}">刷新进度</a></div>
+  {% for task in resource_tasks %}
+  <div class="progress-head"><div><p class="admin-label">任务 #{{ task.id }} · {{ '发布' if task.action == 'publish' else '转为草稿' }} · {{ '等待开始' if task.status == 'pending' else ('正在处理' if task.status == 'running' else ('处理完成' if task.status == 'completed' else '任务异常')) }}</p><p class="progress-count"><strong>{{ task.processed }}</strong> / {{ task.total }}<span>已完成 {{ task.percent }}%</span></p></div><p class="progress-hint">成功修改 {{ task.changed }} · 无需修改 {{ task.unchanged }} · 条件不满足 {{ task.skipped }} · 异常 {{ task.errors }}</p></div>
+  <div class="progress-track" role="progressbar" aria-valuenow="{{ task.processed }}" aria-valuemin="0" aria-valuemax="{{ task.total }}"><span class="progress-bar" style="width: {{ task.percent }}%"></span></div>
+  {% if task.reasons %}<p class="hint">未发布原因：{% for reason, count in task.reasons.items() %}{{ reason }} {{ count }} 条{% if not loop.last %}；{% endif %}{% endfor %}　<a href="{{ url_for('admin_resource_review') }}?stage=review">进入资料处理查看具体图书 →</a></p>{% endif %}
+  {% if task.error_message %}<p class="hint danger-text">{{ task.error_message }}</p>{% endif %}
+  {% endfor %}
 </section>
 {% endif %}
 <section class="admin-card">
@@ -41,11 +33,15 @@
   </form>
   <form action="{{ url_for('admin_resources_batch_delete') }}" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <input type="hidden" name="status" value="{{ status }}">
     <div class="batch-actions">
       <label class="batch-select-all"><input type="checkbox" id="select-all-resources"> 全选本页</label>
-      <button type="submit" class="btn btn-primary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="publish" onclick="return confirm('将发布所有勾选且通过版权、分类和网盘链接检查的资源，是否继续？')">批量发布</button>
+      <button type="submit" class="btn btn-primary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="publish" onclick="return confirm('将发布所有勾选且通过版权、分类和网盘链接检查的资源，是否继续？')">发布已勾选</button>
+      <button type="submit" class="btn btn-primary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="publish" formmethod="post" onclick="if(!confirm('将当前筛选条件下的 {{ pagination.total }} 条资源加入后台发布任务；只发布通过版权、分类和有效网盘链接检查的资源，是否继续？')) return false; this.form.querySelector('[name=scope]').value='filtered';">后台发布全部筛选结果（{{ pagination.total }}条）</button>
       <button type="submit" class="btn btn-secondary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="draft" onclick="return confirm('将勾选资源从前台撤下并转为草稿，是否继续？')">批量转草稿</button>
       <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定删除选中的资源吗？关联的网盘入口、点击记录也会被清除，不可恢复。')">批量删除</button>
+      <input type="hidden" name="scope" value="selected">
     </div>
     <div class="table-responsive">
       <table class="recent-table">
@@ -94,4 +90,5 @@
   });
 })();
 </script>
+{% if has_active_resource_tasks %}<script>window.setTimeout(function(){ window.location.reload(); }, 5000);</script>{% endif %}
 {% endblock %}

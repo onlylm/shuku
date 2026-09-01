@@ -201,7 +201,7 @@ def commit_batch(db: Session, batch: OrganizerBatch, choices: CommitChoices, adm
                         raise ValueError("分享链接已属于另一条资源，未覆盖")
                     if not link:
                         link = add_or_replace_link(db, resource.id, incoming["url"], incoming.get("extract_code"))
-                    if choice.publish and not blockers:
+                    if choice.publish:
                         log = check_link(db, link)
                         if log.result == "ok":
                             verified_now.add(link.id)

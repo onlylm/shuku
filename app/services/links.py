@@ -128,6 +128,12 @@ def check_link(db: Session, link: ChannelShareLink, client: httpx.Client | None 
     finally:
         if owned_client:
             client.close()
+    if log.result == "ok" and link.channel and link.channel.resource:
+        # 桌面同步或后台巡检确认链接有效后，资料齐全的草稿可直接发布；
+        # 仍有版权、分类或元数据问题的资源继续保留为草稿，进入人工审核队列。
+        from app.services.publication import publish_if_ready
+
+        publish_if_ready(link.channel.resource)
     db.add(log)
     db.flush()
     return log

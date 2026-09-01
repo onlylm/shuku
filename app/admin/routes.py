@@ -43,7 +43,12 @@ from app.services.link_monitor import due_link_count, queue_link_check_task, rec
 from app.services.operations import monitor_config
 from app.services.pagination import pagination_context
 from app.services.resources import create_resource, update_resource
-from app.services.publication import publication_issues
+from app.services.publication import publication_issues, publication_readiness_issues
+from app.services.resource_tasks import (
+    apply_resource_status,
+    queue_resource_status_task,
+    recent_resource_tasks,
+)
 from app.services.category_governance import catalog_audit, merge_categories, merge_preview, save_mapping, move_category_books
 from app.services.catalog_layout import fixed_root_ids, layout
 from app.services.category_forms import category_picker, category_ids_from_form
@@ -253,7 +258,28 @@ def resources_list(
         )
     )
     pagination = pagination_context(request.url.path, page, per_page, total, q=q.strip(), status=status)
-    recent = list(db.scalars(select(Resource).order_by(Resource.updated_at.desc()).limit(8)))
+    task_rows = []
+    for task in recent_resource_tasks(db):
+        result = dict(task.result or {})
+        total_count = int(result.get("total") or task.payload.get("total") or 0)
+        processed_count = int(result.get("processed") or 0)
+        task_rows.append(
+            {
+                "id": task.id,
+                "status": task.status,
+                "action": str(task.payload.get("action") or "publish"),
+                "total": total_count,
+                "processed": processed_count,
+                "percent": round(processed_count / total_count * 100) if total_count else 0,
+                "changed": int(result.get("changed") or 0),
+                "skipped": int(result.get("skipped") or 0),
+                "unchanged": int(result.get("unchanged") or 0),
+                "errors": int(result.get("errors") or 0),
+                "reasons": dict(result.get("reasons") or {}),
+                "created_at": task.created_at,
+                "error_message": task.error_message,
+            }
+        )
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/resources.html",
@@ -264,8 +290,76 @@ def resources_list(
             q=q,
             status=status,
             pagination=pagination,
-            recent=recent,
+            resource_tasks=task_rows,
+            has_active_resource_tasks=any(item["status"] in {"pending", "running"} for item in task_rows),
             active="resources",
+        ),
+    )
+
+
+@router.get("/resources/review", name="admin_resource_review")
+def resource_review(
+    request: Request,
+    q: str = "",
+    stage: str = "review",
+    page: int = 1,
+    db: Session = Depends(get_db),
+):
+    if not current_admin(request, db):
+        return _redirect_login(request)
+    page = max(page, 1)
+    per_page = 50
+    statement = (
+        select(Resource)
+        .where(Resource.publish_status == "draft")
+        .options(
+            selectinload(Resource.categories),
+            selectinload(Resource.channels).selectinload(ResourceChannel.provider),
+            selectinload(Resource.channels).selectinload(ResourceChannel.share_links),
+        )
+        .order_by(Resource.updated_at.desc(), Resource.id.desc())
+    )
+    if q.strip():
+        like = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                Resource.title.like(like),
+                Resource.author.like(like),
+                Resource.publisher.like(like),
+                Resource.isbn.like(like),
+            )
+        )
+    all_items = []
+    stage_counts = {"detect": 0, "review": 0, "ready": 0}
+    for resource in db.scalars(statement).unique():
+        links = [link for channel in resource.channels for link in channel.share_links]
+        if any(link.status == "pending" for link in links):
+            current_stage, issues = "detect", ["网盘链接等待检测"]
+        else:
+            issues = publication_readiness_issues(resource)
+            current_stage = "review" if issues else "ready"
+        stage_counts[current_stage] += 1
+        all_items.append({"resource": resource, "issues": issues, "stage": current_stage})
+    if stage not in stage_counts:
+        stage = "review"
+    review_items = [item for item in all_items if item["stage"] == stage]
+    total = len(review_items)
+    if total and (page - 1) * per_page >= total:
+        page = max((total - 1) // per_page + 1, 1)
+    start = (page - 1) * per_page
+    pagination = pagination_context(request.url.path, page, per_page, total, q=q.strip(), stage=stage)
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/resource_review.html",
+        context=_admin_context(
+            request,
+            db,
+            items=review_items[start : start + per_page],
+            q=q,
+            stage=stage,
+            stage_counts=stage_counts,
+            pagination=pagination,
+            active="review",
         ),
     )
 
@@ -767,10 +861,51 @@ async def resources_batch_status(request: Request, db: Session = Depends(get_db)
     verify_csrf(request, str(form.get("csrf_token") or ""))
     selected_ids = {int(value) for value in form.getlist("selected_resource") if str(value).isdigit()}
     action = str(form.get("action") or "")
+    scope = str(form.get("scope") or "selected")
+    if action not in {"publish", "draft"}:
+        _flash(request, "必须选择发布或转为草稿", "warning")
+        return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+    if scope == "filtered":
+        q, status = str(form.get("q") or "").strip(), str(form.get("status") or "")
+        statement = select(Resource.id).order_by(Resource.id)
+        if q:
+            like = f"%{q}%"
+            statement = statement.where(or_(Resource.title.like(like), Resource.author.like(like), Resource.isbn.like(like)))
+        if status:
+            statement = statement.where(Resource.publish_status == status)
+        resource_ids = list(db.scalars(statement))
+        if not resource_ids:
+            _flash(request, "当前筛选条件下没有可处理的资源", "warning")
+            return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+        task, skipped_busy = queue_resource_status_task(
+            db,
+            resource_ids,
+            action=action,
+            admin_id=admin.id,
+            scope="filtered",
+        )
+        if task is None:
+            _flash(request, "这些资源已在其他后台任务中，请查看任务进度。", "warning")
+            return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+        _audit(
+            db,
+            admin.id,
+            "queue_batch_" + action,
+            "background_task",
+            task.id,
+            {"count": len(task.payload.get("resource_ids", [])), "skipped_busy": skipped_busy, "q": q, "status": status},
+        )
+        db.commit()
+        label = "发布" if action == "publish" else "转为草稿"
+        message = f"已将 {len(task.payload.get('resource_ids', []))} 条资源加入后台{label}任务 #{task.id}，现在可以继续使用网站。"
+        if skipped_busy:
+            message += f" 另有 {skipped_busy} 条已在其他任务中，未重复加入。"
+        _flash(request, message)
+        return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
     if not selected_ids:
         _flash(request, "请至少选择一条资源", "warning")
         return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
-    if len(selected_ids) > 500 or action not in {"publish", "draft"}:
+    if len(selected_ids) > 500:
         _flash(request, "单次最多处理500条资源，且必须选择发布或转为草稿", "warning")
         return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
     resources = list(db.scalars(select(Resource).where(Resource.id.in_(selected_ids)).options(
@@ -779,22 +914,11 @@ async def resources_batch_status(request: Request, db: Session = Depends(get_db)
     )).unique())
     changed, skipped, reasons = 0, 0, {}
     for resource in resources:
-        if action == "draft":
-            if resource.publish_status != "draft":
-                resource.publish_status = "draft"; changed += 1
-            continue
-        issues = publication_issues(resource)
-        usable = any(link.status == "active" and link.is_visible
-            for channel in resource.channels if channel.status == "active" for link in channel.share_links)
-        if not usable:
-            issues.append("缺少检测有效且前台可见的网盘链接")
-        if issues:
+        outcome, issues = apply_resource_status(resource, action)
+        if outcome == "skipped":
             skipped += 1
             for issue in set(issues): reasons[issue] = reasons.get(issue, 0) + 1
-            continue
-        if resource.publish_status != "published":
-            resource.publish_status = "published"
-            resource.published_at = resource.published_at or utcnow()
+        elif outcome == "changed":
             changed += 1
     _audit(db, admin.id, "batch_" + action, "resource", detail={"selected": len(selected_ids), "changed": changed, "skipped": skipped, "reasons": reasons})
     db.commit()
@@ -803,6 +927,8 @@ async def resources_batch_status(request: Request, db: Session = Depends(get_db)
     else:
         summary = "；".join(f"{reason} {count}条" for reason, count in sorted(reasons.items()))
         message = f"批量发布完成：成功 {changed} 条，未通过发布检查 {skipped} 条。" + (" 原因：" + summary if summary else "")
+        if skipped:
+            message += " 请到左侧“资料处理”的待审核列表查看具体图书和当前字段值。"
     _flash(request, message, "warning" if skipped else "success")
     return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
 

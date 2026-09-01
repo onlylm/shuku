@@ -123,6 +123,23 @@ def test_due_monitor_checks_pending_links(db_session):
     assert link.is_visible is True
 
 
+def test_valid_link_check_auto_publishes_complete_draft(db_session):
+    resource, link = _make_link(db_session, visible=False, status="pending", share_id="auto-publish-ready")
+    resource.publish_status = "draft"
+    db_session.commit()
+    link = db_session.scalar(
+        select(ChannelShareLink)
+        .where(ChannelShareLink.id == link.id)
+        .options(selectinload(ChannelShareLink.provider))
+    )
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text="百度网盘分享页面 文件列表", request=request)
+    )
+    with httpx.Client(transport=transport) as mock_client:
+        check_link(db_session, link, mock_client)
+    assert resource.publish_status == "published"
+
+
 def test_admin_batch_checks_selected_links_in_background(admin_client, db_session):
     _, first = _make_link(db_session, visible=False, status="pending", share_id="batch-one")
     _, second = _make_link(db_session, visible=False, status="pending", share_id="batch-two")

@@ -3,9 +3,11 @@ from __future__ import annotations
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 
-from app.models import Category, ChannelShareLink, Resource
+from app.models import BackgroundTask, Category, ChannelShareLink, Resource
 from app.services.links import add_or_replace_link
 from app.services.resources import create_resource
+from app.services.resource_tasks import process_resource_status_task
+from app.services.publication import publication_readiness_issues
 
 
 def _csrf(response) -> str:
@@ -192,12 +194,12 @@ def test_admin_resource_list_is_paginated(admin_client, db_session):
 
     first = BeautifulSoup(admin_client.get("/admin/resources").text, "html.parser")
     second = BeautifulSoup(admin_client.get("/admin/resources?page=2").text, "html.parser")
-    # 页面顶部还有「最近编辑」表格，分页断言只针对资源列表那张表
-    first_rows = first.select("table.recent-table")[-1].select("tbody tr")
-    second_rows = second.select("table.recent-table")[-1].select("tbody tr")
+    first_rows = first.select("table.recent-table")[0].select("tbody tr")
+    second_rows = second.select("table.recent-table")[0].select("tbody tr")
     assert len(first_rows) == 50
     assert len(second_rows) == 1
     assert "共 51 条" in first.get_text(" ", strip=True)
+    assert "最近编辑" not in first.get_text(" ", strip=True)
 
 
 def test_admin_links_shows_monitor_status(admin_client, db_session):
@@ -241,3 +243,70 @@ def test_batch_publish_checks_requirements_and_batch_draft(admin_client, db_sess
     admin_client.post("/admin/resources/batch-status", data={"csrf_token": token, "action": "draft", "selected_resource": str(valid.id)})
     db_session.refresh(valid)
     assert valid.publish_status == "draft"
+
+
+def test_publish_all_filtered_resources_runs_as_background_task(admin_client, db_session):
+    valid = create_resource(db_session, {"title": "后台批量发布成功", "publish_status": "draft",
+        "copyright_status": "authorized", "source_reference": "合成测试授权说明", "category_ids": [1]})
+    invalid = create_resource(db_session, {"title": "后台批量发布跳过", "publish_status": "draft"})
+    published = create_resource(db_session, {"title": "不在草稿筛选中", "publish_status": "published"})
+    published.publish_status = "published"
+    link = add_or_replace_link(db_session, valid.id, "https://pan.baidu.com/s/background-publish-valid")
+    link.status = "active"; link.is_visible = True
+    db_session.commit()
+
+    page = admin_client.get("/admin/resources?status=draft")
+    response = admin_client.post(
+        "/admin/resources/batch-status",
+        data={"csrf_token": _csrf(page), "action": "publish", "scope": "filtered", "status": "draft", "q": ""},
+    )
+    assert "加入后台发布任务" in response.text
+    task = db_session.scalar(select(BackgroundTask).where(BackgroundTask.task_type == "resource_batch_status"))
+    assert task is not None and task.status == "pending"
+    assert set(task.payload["resource_ids"]) == {valid.id, invalid.id}
+    assert published.id not in task.payload["resource_ids"]
+
+    result = process_resource_status_task(db_session, task.id)
+    db_session.refresh(valid); db_session.refresh(invalid); db_session.refresh(task)
+    assert result.processed == 2 and result.changed == 1 and result.skipped == 1
+    assert valid.publish_status == "published" and invalid.publish_status == "draft"
+    assert task.status == "completed"
+
+
+def test_resource_processing_center_shows_exact_problem_and_current_value(admin_client, db_session):
+    resource = create_resource(db_session, {
+        "title": "问题工单测试书",
+        "author": "正常作者",
+        "publisher": "扫码关注公众号领取资料",
+        "publish_status": "draft",
+        "copyright_status": "authorized",
+        "source_reference": "合成测试授权说明",
+        "category_ids": [1],
+    })
+    resource.metadata_locked = True
+    db_session.commit()
+
+    page = admin_client.get("/admin/resources/review?stage=review")
+    text = BeautifulSoup(page.text, "html.parser").get_text(" ", strip=True)
+    assert page.status_code == 200
+    assert "资料处理" in text
+    assert "待检测" in text and "待审核" in text and "待发布" in text
+    assert "问题工单测试书" in text
+    assert "扫码关注公众号领取资料" in text
+    assert "出版社疑似含广告或联系方式" in text
+    assert "桌面端修改不会覆盖网站资料" in text
+
+    resource.publisher = "正规出版社"
+    link = add_or_replace_link(db_session, resource.id, "https://pan.baidu.com/s/review-fixed-link")
+    link.status = "active"; link.is_visible = True
+    db_session.commit()
+    db_session.expire(resource, ["channels"])
+    assert publication_readiness_issues(resource) == []
+    retry = admin_client.post(
+        "/admin/resources/batch-status",
+        data={"csrf_token": _csrf(page), "action": "publish", "scope": "selected", "selected_resource": resource.id},
+    )
+    db_session.refresh(resource)
+    assert resource.publish_status == "published"
+    assert "出版社疑似含广告或联系方式" not in retry.text
+    assert "问题工单测试书" not in admin_client.get("/admin/resources/review?stage=review").text

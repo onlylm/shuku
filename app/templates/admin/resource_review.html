@@ -1,0 +1,37 @@
+{% extends "admin/base.html" %}
+{% block title %}资料处理{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><p class="eyebrow">发布工单</p><h1>资料处理</h1><p>这里只处理尚未完成的图书；链接有效且资料齐全时自动发布，有问题的保留给人工处理。</p></div>
+  <a class="btn btn-secondary" href="{{ url_for('admin_resources') }}">返回资源管理</a>
+</div>
+<section class="metric-grid processing-grid">
+  <a class="metric-card metric-link {{ 'is-active' if stage == 'detect' }}" href="{{ url_for('admin_resource_review') }}?stage=detect"><span class="metric-label">待检测</span><strong>{{ stage_counts.detect }}</strong><small>等待网盘链接检测</small><span class="metric-arrow">查看 →</span></a>
+  <a class="metric-card metric-link {{ 'is-active' if stage == 'review' }}" href="{{ url_for('admin_resource_review') }}?stage=review"><span class="metric-label">待审核</span><strong>{{ stage_counts.review }}</strong><small class="warn">资料、版权、分类或链接有问题</small><span class="metric-arrow">处理 →</span></a>
+  <a class="metric-card metric-link {{ 'is-active' if stage == 'ready' }}" href="{{ url_for('admin_resource_review') }}?stage=ready"><span class="metric-label">待发布</span><strong>{{ stage_counts.ready }}</strong><small>条件齐全，可重新提交发布</small><span class="metric-arrow">查看 →</span></a>
+</section>
+<section class="admin-card">
+  <form class="import-toolbar" method="get">
+    <input class="input" name="q" value="{{ q }}" placeholder="搜索书名、作者、出版社或 ISBN">
+    <select class="select" name="stage"><option value="detect" {{ 'selected' if stage == 'detect' }}>待检测</option><option value="review" {{ 'selected' if stage == 'review' }}>待审核</option><option value="ready" {{ 'selected' if stage == 'ready' }}>待发布</option></select>
+    <button class="btn btn-secondary">搜索工单</button>
+  </form>
+  <div class="table-responsive">
+    <table class="recent-table">
+      <thead><tr><th>问题图书</th><th>当前资料</th><th>阻止发布的具体原因</th><th>同步保护</th><th>处理</th></tr></thead>
+      <tbody>
+      {% for item in items %}{% set resource = item.resource %}
+        <tr>
+          <td class="resource-cell"><span class="mini-cover">{{ resource.title[0] }}</span><div><strong>{{ resource.title }}</strong><small>{{ resource.resource_code }}</small></div></td>
+          <td><small class="block-text">作者：{{ resource.author or '未填写' }}</small><small class="block-text">出版社：{{ resource.publisher or '未填写' }}</small><small class="block-text">分类：{{ resource.categories|map(attribute='name')|join('、') or '未选择' }}</small>{% for channel in resource.channels %}{% for link in channel.share_links %}<small class="block-text">{{ channel.provider.name }}：{{ status_label(link.status) }}／{{ '前台可见' if link.is_visible else '前台隐藏' }}</small>{% endfor %}{% endfor %}</td>
+          <td>{% if item.issues %}<ul class="trust-list compact-list">{% for issue in item.issues %}<li><span class="check-dot danger-dot">!</span>{{ issue }}</li>{% endfor %}</ul>{% else %}<span class="status-badge status-success">检查已通过，等待发布</span>{% endif %}</td>
+          <td><span class="status-badge status-{{ 'warning' if resource.metadata_locked else 'neutral' }}">{{ '已保护人工资料' if resource.metadata_locked else '允许桌面同步更新' }}</span>{% if resource.metadata_locked %}<small class="block-text">桌面端修改不会覆盖网站资料，请在网站编辑或先取消保护。</small>{% endif %}</td>
+          <td><div class="inline-actions compact"><a class="btn btn-primary btn-sm" href="{{ url_for('admin_resource_edit', resource_id=resource.id) }}">{{ '查看并修正' if item.stage in ['detect','review'] else '查看资源' }}</a><form action="{{ url_for('admin_resources_batch_status') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="selected_resource" value="{{ resource.id }}"><input type="hidden" name="scope" value="selected"><button class="btn btn-secondary btn-sm" name="action" value="publish">重新尝试发布</button></form></div></td>
+        </tr>
+      {% else %}<tr><td colspan="5">当前状态下没有图书。</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "shared/_pagination.html" %}
+</section>
+{% endblock %}

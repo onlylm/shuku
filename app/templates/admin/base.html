@@ -3,6 +3,7 @@
 <aside class="admin-sidebar" data-admin-sidebar><a class="brand" href="{{ url_for('admin_dashboard') }}">{% include '_brand.html' %}</a><p class="admin-label">内容管理</p><nav class="admin-nav">
 <a class="{{ 'active' if active == 'dashboard' }}" href="{{ url_for('admin_dashboard') }}"><span class="nav-glyph">⌂</span>仪表盘</a>
 <a class="{{ 'active' if active == 'resources' }}" href="{{ url_for('admin_resources') }}"><span class="nav-glyph">▤</span>资源管理</a>
+<a class="{{ 'active' if active == 'review' }}" href="{{ url_for('admin_resource_review') }}"><span class="nav-glyph">!</span>资料处理</a>
 <a class="{{ 'active' if active == 'import' }}" href="{{ url_for('admin_import') }}"><span class="nav-glyph">⇧</span>表格导入</a>
 <a class="{{ 'active' if active == 'organizer' }}" href="{{ url_for('admin_organizer') }}"><span class="nav-glyph">▣</span>桌面同步</a>
 <a class="{{ 'active' if active == 'links' }}" href="{{ url_for('admin_links') }}"><span class="nav-glyph">⌁</span>链接检测</a>
