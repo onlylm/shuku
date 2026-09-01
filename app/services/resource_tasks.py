@@ -226,10 +226,17 @@ def process_next_resource_task() -> bool:
 
 async def resource_task_worker_loop(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
-        processed = await asyncio.to_thread(process_next_resource_task)
-        if processed:
-            await asyncio.sleep(0)
-            continue
+        try:
+            processed = await asyncio.to_thread(process_next_resource_task)
+            if processed:
+                await asyncio.sleep(0)
+                continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 部署启动或迁移切换期间数据库可能短暂未就绪；后台线程等待后重试，
+            # 不能让整个网站进程或测试生命周期因此退出。
+            logger.exception("批量资源后台线程暂时无法读取任务队列")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=2)
         except TimeoutError:
