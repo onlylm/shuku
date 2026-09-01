@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -39,7 +39,8 @@ def create_app() -> FastAPI:
         stop_event = asyncio.Event()
         monitor_task = None
         upload_task = None
-        if settings.link_check_automatic_enabled:
+        # 环境开关控制是否启动工作线程；巡检计划与执行开关由后台动态读取。
+        if settings.app_env == "production" or settings.link_check_automatic_enabled:
             monitor_task = asyncio.create_task(link_monitor_loop(stop_event))
         if settings.cloud_upload_worker_enabled:
             upload_task = asyncio.create_task(cloud_upload_worker_loop(stop_event))
@@ -83,11 +84,13 @@ def create_app() -> FastAPI:
     app.state.config = settings
     templates = Jinja2Templates(directory=BASE_DIR / "templates", context_processors=[template_profile])
 
-    def _dtformat(value: datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    def _dtformat(value: datetime | None, fmt: str = "%Y-%m-%d %H:%M", zone_name: str = "Asia/Shanghai") -> str:
         if not value:
             return "—"
-        if value.tzinfo is not None:
-            value = value.astimezone()
+        from app.services.operations import timezone_for_name
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone_for_name(zone_name))
         return value.strftime(fmt)
 
     templates.env.filters["dtformat"] = _dtformat

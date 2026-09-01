@@ -9,6 +9,7 @@ from app.providers import registry, url_hash
 from app.services.links import check_link
 from app.services.link_monitor import check_due_links
 from app.services.resources import create_resource
+from app.services.site_settings import put_value
 
 
 def _make_link(
@@ -108,6 +109,8 @@ def test_transient_error_only_hides_after_threshold(db_session):
 
 
 def test_due_monitor_checks_pending_links(db_session):
+    put_value(db_session, "operations", {"link_check_enabled": True, "link_check_mode": "interval", "link_check_interval_minutes": 360})
+    db_session.commit()
     _, link = _make_link(db_session, visible=False, status="pending", share_id="monitor-due")
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, text="百度网盘分享页面 文件列表", request=request)
@@ -118,6 +121,21 @@ def test_due_monitor_checks_pending_links(db_session):
     assert result.ok == 1
     assert link.status == "active"
     assert link.is_visible is True
+
+
+def test_admin_batch_checks_selected_links(admin_client, db_session, monkeypatch):
+    _, first = _make_link(db_session, visible=False, status="pending", share_id="batch-one")
+    _, second = _make_link(db_session, visible=False, status="pending", share_id="batch-two")
+    import app.admin.routes as routes
+    def good(db, link):
+        link.status = "active"; link.is_visible = True
+        return type("Log", (), {"result": "ok"})()
+    monkeypatch.setattr(routes, "check_link", good)
+    from bs4 import BeautifulSoup
+    token = BeautifulSoup(admin_client.get("/admin/links").text, "html.parser").select_one('[name="csrf_token"]')["value"]
+    response = admin_client.post("/admin/links/batch-check", data={"csrf_token": token, "scope": "selected", "link_id": [str(first.id), str(second.id)]})
+    assert "批量检测完成" in response.text and "有效 2 条" in response.text
+    assert first.is_visible and second.is_visible
 
 
 def test_frontend_only_shows_valid_links(client, db_session):

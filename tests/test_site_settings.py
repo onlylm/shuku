@@ -32,7 +32,7 @@ def login(client, username="admin", password="Testing123!"):
     return client.post("/admin/login", data={"csrf_token": token, "username": username, "password": password}, follow_redirects=False)
 
 
-@pytest.mark.parametrize("tab", ["site", "account", "domains", "sync", "updates"])
+@pytest.mark.parametrize("tab", ["site", "operations", "account", "domains", "sync", "updates"])
 def test_settings_tabs_and_navigation(admin_client, tab):
     response = admin_client.get("/admin/settings?tab=" + tab)
     assert response.status_code == 200
@@ -191,6 +191,17 @@ def test_sync_hosts_override_and_explicit_clear(admin_client, db_session, monkey
     submit(admin_client, "sync", cover_hosts="")
     assert cover_hosts(db_session) == []
     assert "尚未配置" in admin_client.get("/admin/organizer").text
+
+
+def test_timezone_and_link_schedule_are_editable(admin_client, db_session):
+    response = submit(admin_client, "operations", timezone="Asia/Shanghai", link_check_enabled="yes",
+        link_check_mode="daily", link_check_interval_minutes="360", link_check_daily_time="02:30", link_check_batch_size="80")
+    assert "无需重启" in response.text
+    saved = db_session.get(SiteSetting, "operations").value
+    assert saved == {"timezone": "Asia/Shanghai", "link_check_enabled": True, "link_check_mode": "daily",
+        "link_check_interval_minutes": 360, "link_check_daily_time": "02:30", "link_check_batch_size": 80}
+    page = admin_client.get("/admin/settings?tab=operations").text
+    assert "北京时间" in page and 'value="02:30"' in page
 
 
 def test_domain_draft_does_not_change_runtime(admin_client, db_session):

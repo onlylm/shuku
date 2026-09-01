@@ -4,7 +4,7 @@
 {% macro password() %}<label class="field"><span>当前管理员密码</span><input class="input" type="password" name="current_password" autocomplete="current-password" required></label>{% endmacro %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">网站运营</p><h1>系统设置</h1><p class="muted">管理网站资料、访问域名与账号安全。</p></div></div>
-<nav class="settings-tabs" aria-label="设置分区">{% for key, label in [('site','网站资料'),('account','账号安全'),('domains','域名管理'),('sync','桌面同步'),('updates','系统维护')] %}<a href="/admin/settings?tab={{ key }}" class="{{ 'active' if tab == key }}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
+<nav class="settings-tabs" aria-label="设置分区">{% for key, label in [('site','网站资料'),('operations','时间与巡检'),('account','账号安全'),('domains','域名管理'),('sync','桌面同步'),('updates','系统维护')] %}<a href="/admin/settings?tab={{ key }}" class="{{ 'active' if tab == key }}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
 {% if tab == 'site' %}
 <form class="admin-card settings-card form-stack" action="/admin/settings/site" method="post" enctype="multipart/form-data">{{ csrf() }}
 <h2>网站资料</h2><p class="muted">保存后前台、登录页和后台同步生效，不需要重启服务器。</p>
@@ -16,6 +16,14 @@
 <label class="field"><span>联系邮箱（可选）</span><input class="input" type="email" name="contact_email" maxlength="254" value="{{ profile.contact_email }}"></label>
 <label class="field"><span>页脚说明</span><textarea class="input" name="footer" rows="3" maxlength="1000">{{ profile.footer }}</textarea></label>
 <div><button class="btn btn-primary">保存网站资料</button></div></form>
+{% elif tab == 'operations' %}
+<form class="admin-card settings-card form-stack" action="/admin/settings/operations" method="post">{{ csrf() }}
+<h2>网站时间</h2><p class="muted">网页显示、“今日”统计和固定时间巡检按这里的时区计算。默认北京时间；历史数据不会被改乱。</p>
+<label class="field"><span>网站时区</span><select class="select" name="timezone">{% for value, label in timezone_choices %}<option value="{{ value }}" {{ 'selected' if operations.timezone == value }}>{{ label }}</option>{% endfor %}</select></label>
+<hr><h2>网盘链接定时检测</h2><label class="checkbox-field"><input type="checkbox" name="link_check_enabled" value="yes" {{ 'checked' if operations.enabled }}> 启用自动巡检</label>
+<div class="settings-grid"><label class="field"><span>执行方式</span><select class="select" name="link_check_mode"><option value="interval" {{ 'selected' if operations.mode == 'interval' }}>按间隔循环检测</option><option value="daily" {{ 'selected' if operations.mode == 'daily' }}>每天固定时间检测</option></select></label><label class="field"><span>每批检测数量</span><input class="input" type="number" name="link_check_batch_size" min="1" max="500" value="{{ operations.batch_size }}"></label></div>
+<div class="settings-grid"><label class="field"><span>间隔分钟数</span><input class="input" type="number" name="link_check_interval_minutes" min="5" max="10080" value="{{ operations.interval_minutes }}"><small class="form-hint">按间隔时生效，例如360表示每条链接约6小时复检。</small></label><label class="field"><span>每天固定时间</span><input class="input" type="time" name="link_check_daily_time" value="{{ operations.daily_time }}"><small class="form-hint">按网站时区执行。</small></label></div>
+<div><button class="btn btn-primary">保存时间与巡检设置</button> <a class="btn btn-secondary" href="/admin/links">前往链接检测</a></div></form>
 {% elif tab == 'account' %}
 <form class="admin-card settings-card form-stack" action="/admin/settings/account" method="post">{{ csrf() }}<h2>账号安全</h2><p class="muted">保存后需要重新登录。修改账号或密码会使所有旧登录失效；桌面同步专用授权不受影响。</p>
 <div class="settings-grid"><label class="field"><span>管理员账号</span><input class="input" name="username" value="{{ admin.username }}" maxlength="64" required autocomplete="username"></label><label class="field"><span>显示名称</span><input class="input" name="display_name" value="{{ admin.display_name }}" maxlength="100" required></label></div>

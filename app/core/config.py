@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     import_max_rows: int = Field(default=20000, ge=1, le=100000)
     import_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
     link_check_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
-    link_check_automatic_enabled: bool = False
+    link_check_automatic_enabled: bool = True
     link_check_interval_minutes: int = Field(default=360, ge=5, le=10080)
     link_check_poll_seconds: int = Field(default=60, ge=10, le=3600)
     link_check_batch_size: int = Field(default=10, ge=1, le=100)

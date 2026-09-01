@@ -18,6 +18,7 @@ from app.core.security import current_admin, hash_password, login_rate_limiter, 
 from app.models import AdminUser
 from app.services import maintenance
 from app.services.site_settings import clean_profile, cover_hosts, parse_hosts, profile, put_value, read_value, save_image
+from app.services.operations import TIMEZONE_CHOICES, monitor_config, validate_operations
 from scripts.maintenance_protocol import current_version, release_info, version_key
 from scripts.server_config import hostname
 
@@ -38,7 +39,7 @@ def site_asset(name: str):
 def settings_page(request: Request, tab: str = "site", db: Session = Depends(get_db)):
     if not current_admin(request, db):
         return _redirect_login(request)
-    if tab not in {"site", "account", "domains", "sync", "updates"}:
+    if tab not in {"site", "operations", "account", "domains", "sync", "updates"}:
         tab = "site"
     config = get_settings()
     release = read_value(db, "release")
@@ -48,7 +49,8 @@ def settings_page(request: Request, tab: str = "site", db: Session = Depends(get
         context=_admin_context(request, db, active="settings", tab=tab, profile=profile(db),
             version=current_version(), release=release, control=maintenance.control_status(),
             primary=urlsplit(config.public_base_url).hostname, aliases=config.site_aliases.replace(",", "\n"),
-            cover_hosts="\n".join(cover_hosts(db)), domain_draft=read_value(db, "domain_draft")))
+            cover_hosts="\n".join(cover_hosts(db)), domain_draft=read_value(db, "domain_draft"),
+            operations=monitor_config(db), timezone_choices=TIMEZONE_CHOICES))
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -74,7 +76,7 @@ async def settings_save(section: str, request: Request, db: Session = Depends(ge
         return _redirect_login(request)
     form = await request.form(max_part_size=2 * 1024 * 1024 + 1024)
     verify_csrf(request, str(form.get("csrf_token", "")))
-    tab = section if section in {"site", "account", "domains", "sync", "updates"} else "updates"
+    tab = section if section in {"site", "operations", "account", "domains", "sync", "updates"} else "updates"
     try:
         if section == "site":
             data = {**profile(db), **clean_profile(dict(form))}
@@ -86,6 +88,9 @@ async def settings_save(section: str, request: Request, db: Session = Depends(ge
                     data[key] = await run_in_threadpool(save_image, await upload.read(2 * 1024 * 1024 + 1), key)
             put_value(db, "profile", data)
             message = "网站资料已保存，前台、登录页和后台立即使用新资料。"
+        elif section == "operations":
+            put_value(db, "operations", validate_operations(form))
+            message = "时区和网盘链接定时检测设置已保存，无需重启网站。"
         elif section == "sync":
             put_value(db, "sync", {"cover_hosts": parse_hosts(str(form.get("cover_hosts", "")))})
             message = "封面域名白名单已保存；桌面授权和站点编号保持不变。"

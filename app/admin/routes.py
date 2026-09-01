@@ -40,6 +40,7 @@ from app.services.imports import commit_preview, create_preview
 from app.services.links import DuplicateLinkError, add_or_replace_link, check_link
 from app.services.metadata_import import MATCH_LABELS, commit_meta_preview, create_meta_preview
 from app.services.link_monitor import due_link_count
+from app.services.operations import monitor_config
 from app.services.pagination import pagination_context
 from app.services.resources import create_resource, update_resource
 from app.services.publication import publication_issues
@@ -757,6 +758,55 @@ async def resources_batch_delete(request: Request, db: Session = Depends(get_db)
     return RedirectResponse(request.url_for("admin_resources"), status_code=303)
 
 
+@router.post("/resources/batch-status", name="admin_resources_batch_status")
+async def resources_batch_status(request: Request, db: Session = Depends(get_db)):
+    admin = current_admin(request, db)
+    if not admin:
+        return _redirect_login(request)
+    form = await request.form()
+    verify_csrf(request, str(form.get("csrf_token") or ""))
+    selected_ids = {int(value) for value in form.getlist("selected_resource") if str(value).isdigit()}
+    action = str(form.get("action") or "")
+    if not selected_ids:
+        _flash(request, "请至少选择一条资源", "warning")
+        return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+    if len(selected_ids) > 500 or action not in {"publish", "draft"}:
+        _flash(request, "单次最多处理500条资源，且必须选择发布或转为草稿", "warning")
+        return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+    resources = list(db.scalars(select(Resource).where(Resource.id.in_(selected_ids)).options(
+        selectinload(Resource.categories),
+        selectinload(Resource.channels).selectinload(ResourceChannel.share_links),
+    )).unique())
+    changed, skipped, reasons = 0, 0, {}
+    for resource in resources:
+        if action == "draft":
+            if resource.publish_status != "draft":
+                resource.publish_status = "draft"; changed += 1
+            continue
+        issues = publication_issues(resource)
+        usable = any(link.status == "active" and link.is_visible
+            for channel in resource.channels if channel.status == "active" for link in channel.share_links)
+        if not usable:
+            issues.append("缺少检测有效且前台可见的网盘链接")
+        if issues:
+            skipped += 1
+            for issue in set(issues): reasons[issue] = reasons.get(issue, 0) + 1
+            continue
+        if resource.publish_status != "published":
+            resource.publish_status = "published"
+            resource.published_at = resource.published_at or utcnow()
+            changed += 1
+    _audit(db, admin.id, "batch_" + action, "resource", detail={"selected": len(selected_ids), "changed": changed, "skipped": skipped, "reasons": reasons})
+    db.commit()
+    if action == "draft":
+        message = f"批量处理完成：已将 {changed} 条资源转为草稿。"
+    else:
+        summary = "；".join(f"{reason} {count}条" for reason, count in sorted(reasons.items()))
+        message = f"批量发布完成：成功 {changed} 条，未通过发布检查 {skipped} 条。" + (" 原因：" + summary if summary else "")
+    _flash(request, message, "warning" if skipped else "success")
+    return RedirectResponse(request.headers.get("referer") or request.url_for("admin_resources"), 303)
+
+
 @router.post("/resources/{resource_id}/links", name="admin_link_add")
 async def link_add(resource_id: int, request: Request, db: Session = Depends(get_db)):
     admin = current_admin(request, db)
@@ -862,6 +912,46 @@ async def link_hide(link_id: int, request: Request, db: Session = Depends(get_db
     return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), status_code=303)
 
 
+@router.post("/links/batch-check", name="admin_links_batch_check")
+async def links_batch_check(request: Request, db: Session = Depends(get_db)):
+    admin = current_admin(request, db)
+    if not admin:
+        return _redirect_login(request)
+    form = await request.form()
+    verify_csrf(request, str(form.get("csrf_token") or ""))
+    scope = str(form.get("scope") or "selected")
+    statement = select(ChannelShareLink).options(selectinload(ChannelShareLink.provider)).order_by(ChannelShareLink.id)
+    if scope == "filtered":
+        status, visibility = str(form.get("status") or ""), str(form.get("visibility") or "")
+        if status == "problem": statement = statement.where(ChannelShareLink.status.in_(["invalid", "error"]))
+        elif status: statement = statement.where(ChannelShareLink.status == status)
+        if visibility == "visible": statement = statement.where(ChannelShareLink.is_visible.is_(True))
+        elif visibility == "hidden": statement = statement.where(ChannelShareLink.is_visible.is_(False))
+        statement = statement.limit(500)
+    else:
+        ids = []
+        for value in form.getlist("link_id"):
+            try: ids.append(int(value))
+            except (TypeError, ValueError): pass
+        if not ids:
+            _flash(request, "请先勾选需要检测的链接", "warning")
+            return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), 303)
+        statement = statement.where(ChannelShareLink.id.in_(ids[:500]))
+    links = list(db.scalars(statement).unique())
+    results = {"ok": 0, "invalid": 0, "error": 0}
+    for link in links:
+        try:
+            log = check_link(db, link)
+            results[log.result if log.result in results else "error"] += 1
+            db.commit()
+        except Exception:
+            db.rollback(); results["error"] += 1
+    _audit(db, admin.id, "batch_check_links", "share_link", detail={"count": len(links), **results})
+    db.commit()
+    _flash(request, f'批量检测完成：共 {len(links)} 条，有效 {results["ok"]} 条，失效 {results["invalid"]} 条，网络异常 {results["error"]} 条。')
+    return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), 303)
+
+
 @router.get("/links", name="admin_links")
 def links_list(
     request: Request,
@@ -905,6 +995,7 @@ def links_list(
         visibility=visibility,
     )
     settings = get_settings()
+    monitor = monitor_config(db)
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/links.html",
@@ -916,9 +1007,7 @@ def links_list(
             visibility=visibility,
             pagination=pagination,
             monitor={
-                "enabled": settings.link_check_automatic_enabled,
-                "interval_minutes": settings.link_check_interval_minutes,
-                "batch_size": settings.link_check_batch_size,
+                **monitor,
                 "error_threshold": settings.link_check_error_threshold,
                 "due_count": due_link_count(db),
             },

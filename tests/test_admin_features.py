@@ -211,5 +211,25 @@ def test_admin_links_shows_monitor_status(admin_client, db_session):
     page = admin_client.get("/admin/links")
     assert page.status_code == 200
     assert "自动巡检未启用" in page.text
-    assert "当前有 1 条等待巡检" in page.text
+    assert "当前有 0 条等待巡检" in page.text
     assert link.normalized_url in page.text
+
+
+def test_batch_publish_checks_requirements_and_batch_draft(admin_client, db_session):
+    valid = create_resource(db_session, {"title": "可以批量发布", "publish_status": "draft",
+        "copyright_status": "authorized", "source_reference": "合成测试授权说明", "category_ids": [1]})
+    invalid = create_resource(db_session, {"title": "资料不完整", "publish_status": "draft"})
+    link = add_or_replace_link(db_session, valid.id, "https://pan.baidu.com/s/batch-publish-valid")
+    link.status = "active"; link.is_visible = True
+    db_session.commit()
+    page = admin_client.get("/admin/resources")
+    token = BeautifulSoup(page.text, "html.parser").select_one('[name="csrf_token"]')["value"]
+    response = admin_client.post("/admin/resources/batch-status", data={"csrf_token": token, "action": "publish",
+        "selected_resource": [str(valid.id), str(invalid.id)]})
+    assert "成功 1 条" in response.text and "未通过发布检查 1 条" in response.text
+    db_session.refresh(valid); db_session.refresh(invalid)
+    assert valid.publish_status == "published" and invalid.publish_status == "draft"
+    token = BeautifulSoup(response.text, "html.parser").select_one('[name="csrf_token"]')["value"]
+    admin_client.post("/admin/resources/batch-status", data={"csrf_token": token, "action": "draft", "selected_resource": str(valid.id)})
+    db_session.refresh(valid)
+    assert valid.publish_status == "draft"

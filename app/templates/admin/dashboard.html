@@ -13,7 +13,7 @@
 <section class="dashboard-grid">
   <aside class="admin-card">
     <div class="card-header"><div><h2>无结果搜索</h2><p>用于判断下一批可以补充什么。</p></div></div>
-    <ul class="alert-list">{% for item in zero_queries %}<li class="alert-item"><span class="alert-dot"></span><div><strong>{{ item.raw_query }}</strong><small>{{ item.searched_at.strftime('%m-%d %H:%M') }}</small></div></li>{% else %}<li class="alert-item">暂无记录</li>{% endfor %}</ul>
+    <ul class="alert-list">{% for item in zero_queries %}<li class="alert-item"><span class="alert-dot"></span><div><strong>{{ item.raw_query }}</strong><small>{{ item.searched_at|dtformat('%m-%d %H:%M', site_timezone) }}</small></div></li>{% else %}<li class="alert-item">暂无记录</li>{% endfor %}</ul>
   </aside>
 </section>
 {% endblock %}

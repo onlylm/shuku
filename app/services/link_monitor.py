@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.models import ChannelShareLink, Provider, ResourceChannel
 from app.models.base import utcnow
 from app.services.links import check_link
+from app.services.operations import due_cutoff, monitor_config
 
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,9 @@ class MonitorResult:
     errors: int = 0
 
 
-def due_link_statement(now=None):
-    settings = get_settings()
-    cutoff = (now or utcnow()) - timedelta(minutes=settings.link_check_interval_minutes)
-    return (
+def due_link_statement(db: Session, now=None):
+    cutoff = due_cutoff(db, now)
+    statement = (
         select(ChannelShareLink)
         .join(ChannelShareLink.channel)
         .join(ChannelShareLink.provider)
@@ -37,15 +37,17 @@ def due_link_statement(now=None):
             ResourceChannel.status == "active",
             Provider.status == "active",
             ChannelShareLink.status != "disabled",
-            or_(ChannelShareLink.last_checked_at.is_(None), ChannelShareLink.last_checked_at <= cutoff),
         )
         .options(selectinload(ChannelShareLink.provider))
         .order_by(ChannelShareLink.last_checked_at.asc(), ChannelShareLink.id.asc())
     )
+    if cutoff is None:
+        return statement.where(false())
+    return statement.where(or_(ChannelShareLink.last_checked_at.is_(None), ChannelShareLink.last_checked_at <= cutoff))
 
 
 def due_link_count(db: Session, now=None) -> int:
-    return int(db.scalar(select(func.count()).select_from(due_link_statement(now).subquery())) or 0)
+    return int(db.scalar(select(func.count()).select_from(due_link_statement(db, now).subquery())) or 0)
 
 
 def check_due_links(
@@ -55,7 +57,8 @@ def check_due_links(
     limit: int | None = None,
 ) -> MonitorResult:
     settings = get_settings()
-    links = list(db.scalars(due_link_statement().limit(limit or settings.link_check_batch_size)).unique())
+    config = monitor_config(db)
+    links = list(db.scalars(due_link_statement(db).limit(limit or config["batch_size"])).unique())
     result = MonitorResult()
     owned_client = client is None
     if client is None:

@@ -20,7 +20,7 @@
         <tr>
           <td class="resource-cell"><span class="mini-cover">{{ item.title[0] }}</span><a href="{{ url_for('admin_resource_edit', resource_id=item.id) }}"><strong>{{ item.title }}</strong><small>{{ item.author or '作者待补充' }}</small></a></td>
           <td><span class="status-badge status-{{ 'success' if item.publish_status == 'published' else 'neutral' }}">{{ status_label(item.publish_status) }}</span></td>
-          <td>{{ item.updated_at.strftime('%m-%d %H:%M') }}</td>
+          <td>{{ item.updated_at|dtformat('%m-%d %H:%M', site_timezone) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -43,6 +43,8 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <div class="batch-actions">
       <label class="batch-select-all"><input type="checkbox" id="select-all-resources"> 全选本页</label>
+      <button type="submit" class="btn btn-primary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="publish" onclick="return confirm('将发布所有勾选且通过版权、分类和网盘链接检查的资源，是否继续？')">批量发布</button>
+      <button type="submit" class="btn btn-secondary btn-sm" formaction="{{ url_for('admin_resources_batch_status') }}" name="action" value="draft" onclick="return confirm('将勾选资源从前台撤下并转为草稿，是否继续？')">批量转草稿</button>
       <button type="submit" class="btn btn-danger btn-sm">批量删除</button>
     </div>
     <div class="table-responsive">

@@ -107,6 +107,8 @@ def bind_profile(request: Request, db: Session = Depends(get_db)):
     if request.url.path in {"/api/v1/health", "/api/v1/ready"}:
         return
     request.state.site_profile = profile(db, request.app.state.config)
+    from app.services.operations import timezone_name
+    request.state.site_timezone = timezone_name(db)
 
 
 def template_profile(request: Request) -> dict:
@@ -114,4 +116,4 @@ def template_profile(request: Request) -> dict:
     data = getattr(request.state, "site_profile", {"name": config.app_name, "description": DEFAULT_DESCRIPTION,
         "footer": DEFAULT_FOOTER, "contact_email": "", "logo": "", "favicon": "",
         "hero_eyebrow": DEFAULT_HERO_EYEBROW, "hero_title": DEFAULT_HERO_TITLE})
-    return {"app_name": data["name"], "site_profile": data, "server_uploads_available": config.app_env != "production"}
+    return {"app_name": data["name"], "site_profile": data, "site_timezone": getattr(request.state, "site_timezone", "Asia/Shanghai"), "server_uploads_available": config.app_env != "production"}

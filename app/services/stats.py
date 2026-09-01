@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -9,10 +9,6 @@ from sqlalchemy.orm import Session
 from app.models import Category, ChannelShareLink, LinkClick, Resource, SearchQuery, resource_categories
 from app.services.resources import visible_resource_query
 from app.services.catalog_layout import navigation_categories
-
-# 站点运营所在时区（东八区），用于计算“今日更新”。
-SITE_TIMEZONE = timezone(timedelta(hours=8))
-
 
 @dataclass(slots=True)
 class CategoryStat:
@@ -36,9 +32,10 @@ def _visible_resource_ids():
     return visible_resource_query().with_only_columns(Resource.id).order_by(None)
 
 
-def _local_day_start() -> datetime:
+def _local_day_start(db: Session) -> datetime:
     """本地时区当天零点对应的 UTC 时间。"""
-    now_local = datetime.now(SITE_TIMEZONE)
+    from app.services.operations import site_timezone
+    now_local = datetime.now(site_timezone(db))
     start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     return start_local.astimezone(timezone.utc)
 
@@ -49,7 +46,7 @@ def site_stats(db: Session, include_categories: bool = True) -> SiteStats:
         db.scalar(select(func.count()).select_from(visible_ids.subquery())) or 0
     )
 
-    day_start = _local_day_start()
+    day_start = _local_day_start(db)
     today_updated = int(
         db.scalar(
             select(func.count())
@@ -96,7 +93,7 @@ def today_updated_count(db: Session) -> int:
 
 def today_clicks(db: Session) -> int:
     """今日网盘入口点击数（跳转即视为一次下载意图）。"""
-    day_start = _local_day_start()
+    day_start = _local_day_start(db)
     return int(
         db.scalar(select(func.count()).select_from(LinkClick).where(LinkClick.clicked_at >= day_start)) or 0
     )
@@ -104,7 +101,7 @@ def today_clicks(db: Session) -> int:
 
 def today_zero_searches(db: Session) -> int:
     """今日无结果搜索次数。"""
-    day_start = _local_day_start()
+    day_start = _local_day_start(db)
     return int(
         db.scalar(
             select(func.count())

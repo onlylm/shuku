@@ -83,7 +83,7 @@ git clone https://github.com/onlylm/shuku.git ebook-site && cd ebook-site && sud
 | `APP_NAME` | 网站显示名称 |
 | `ORGANIZER_SITE_ID` | 自动生成的站点编号，之后让整理软件填写相同编号 |
 | `ORGANIZER_COVER_HOSTS` | 可选的图片域名白名单，只填主机名，多个用逗号分隔 |
-| `LINK_CHECK_AUTOMATIC_ENABLED` | 默认 false，完成网盘检测联调后可改 true |
+| `LINK_CHECK_AUTOMATIC_ENABLED` | 本地开发是否启动巡检工作线程；生产环境始终启动线程，实际巡检开关和计划由后台“时间与巡检”管理 |
 | `INITIAL_ADMIN_PASSWORD` | 仅空数据库初始化管理员时使用；修改它不会重置已有管理员 |
 
 网站域名与图片域名独立。CF/R2 的上传密钥继续由本地工具保管，网站展示远程图片只需要公开图片地址与白名单，不需要 R2 上传密钥。
