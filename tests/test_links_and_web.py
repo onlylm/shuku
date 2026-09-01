@@ -4,10 +4,10 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models import ChannelShareLink, LinkClick, Provider, Resource, ResourceChannel, SearchQuery
+from app.models import BackgroundTask, ChannelShareLink, LinkClick, Provider, Resource, ResourceChannel, SearchQuery
 from app.providers import registry, url_hash
 from app.services.links import check_link
-from app.services.link_monitor import check_due_links
+from app.services.link_monitor import check_due_links, process_link_check_task
 from app.services.resources import create_resource
 from app.services.site_settings import put_value
 
@@ -123,19 +123,30 @@ def test_due_monitor_checks_pending_links(db_session):
     assert link.is_visible is True
 
 
-def test_admin_batch_checks_selected_links(admin_client, db_session, monkeypatch):
+def test_admin_batch_checks_selected_links_in_background(admin_client, db_session):
     _, first = _make_link(db_session, visible=False, status="pending", share_id="batch-one")
     _, second = _make_link(db_session, visible=False, status="pending", share_id="batch-two")
-    import app.admin.routes as routes
-    def good(db, link):
-        link.status = "active"; link.is_visible = True
-        return type("Log", (), {"result": "ok"})()
-    monkeypatch.setattr(routes, "check_link", good)
     from bs4 import BeautifulSoup
     token = BeautifulSoup(admin_client.get("/admin/links").text, "html.parser").select_one('[name="csrf_token"]')["value"]
     response = admin_client.post("/admin/links/batch-check", data={"csrf_token": token, "scope": "selected", "link_id": [str(first.id), str(second.id)]})
-    assert "批量检测完成" in response.text and "有效 2 条" in response.text
+    assert "已加入后台检测任务" in response.text
+    assert not first.is_visible and not second.is_visible
+    task = db_session.scalar(select(BackgroundTask).where(BackgroundTask.task_type == "link_check_batch"))
+    assert task is not None and task.status == "pending"
+    assert task.payload["link_ids"] == [first.id, second.id]
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text="百度网盘分享页面 文件列表", request=request)
+    )
+    with httpx.Client(transport=transport) as mock_client:
+        result = process_link_check_task(db_session, task.id, client=mock_client)
+    db_session.refresh(first)
+    db_session.refresh(second)
+    db_session.refresh(task)
+    assert result.checked == 2 and result.ok == 2
     assert first.is_visible and second.is_visible
+    assert task.status == "completed"
+    assert task.result == {"total": 2, "checked": 2, "ok": 2, "invalid": 0, "errors": 0}
 
 
 def test_frontend_only_shows_valid_links(client, db_session):

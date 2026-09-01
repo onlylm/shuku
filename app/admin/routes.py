@@ -39,7 +39,7 @@ from app.models.base import utcnow
 from app.services.imports import commit_preview, create_preview
 from app.services.links import DuplicateLinkError, add_or_replace_link, check_link
 from app.services.metadata_import import MATCH_LABELS, commit_meta_preview, create_meta_preview
-from app.services.link_monitor import due_link_count
+from app.services.link_monitor import due_link_count, queue_link_check_task, recent_link_check_tasks
 from app.services.operations import monitor_config
 from app.services.pagination import pagination_context
 from app.services.resources import create_resource, update_resource
@@ -920,7 +920,7 @@ async def links_batch_check(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     verify_csrf(request, str(form.get("csrf_token") or ""))
     scope = str(form.get("scope") or "selected")
-    statement = select(ChannelShareLink).options(selectinload(ChannelShareLink.provider)).order_by(ChannelShareLink.id)
+    statement = select(ChannelShareLink.id).order_by(ChannelShareLink.id)
     if scope == "filtered":
         status, visibility = str(form.get("status") or ""), str(form.get("visibility") or "")
         if status == "problem": statement = statement.where(ChannelShareLink.status.in_(["invalid", "error"]))
@@ -937,18 +937,24 @@ async def links_batch_check(request: Request, db: Session = Depends(get_db)):
             _flash(request, "请先勾选需要检测的链接", "warning")
             return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), 303)
         statement = statement.where(ChannelShareLink.id.in_(ids[:500]))
-    links = list(db.scalars(statement).unique())
-    results = {"ok": 0, "invalid": 0, "error": 0}
-    for link in links:
-        try:
-            log = check_link(db, link)
-            results[log.result if log.result in results else "error"] += 1
-            db.commit()
-        except Exception:
-            db.rollback(); results["error"] += 1
-    _audit(db, admin.id, "batch_check_links", "share_link", detail={"count": len(links), **results})
+    link_ids = list(db.scalars(statement))
+    task, skipped = queue_link_check_task(db, link_ids, admin_id=admin.id, scope=scope)
+    if task is None:
+        _flash(request, "这些链接已在等待或正在检测，请查看下方任务进度。", "warning")
+        return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), 303)
+    _audit(
+        db,
+        admin.id,
+        "queue_link_check_batch",
+        "background_task",
+        task.id,
+        {"count": len(task.payload.get("link_ids", [])), "scope": scope, "skipped": skipped},
+    )
     db.commit()
-    _flash(request, f'批量检测完成：共 {len(links)} 条，有效 {results["ok"]} 条，失效 {results["invalid"]} 条，网络异常 {results["error"]} 条。')
+    message = f"已加入后台检测任务 #{task.id}，共 {len(task.payload.get('link_ids', []))} 条；现在可以继续使用网站。"
+    if skipped:
+        message += f" 另有 {skipped} 条已在其他任务中，未重复加入。"
+    _flash(request, message)
     return RedirectResponse(request.headers.get("referer") or request.url_for("admin_links"), 303)
 
 
@@ -996,6 +1002,25 @@ def links_list(
     )
     settings = get_settings()
     monitor = monitor_config(db)
+    task_rows = []
+    for task in recent_link_check_tasks(db):
+        result = dict(task.result or {})
+        total_count = int(result.get("total") or task.payload.get("total") or 0)
+        checked_count = int(result.get("checked") or 0)
+        task_rows.append(
+            {
+                "id": task.id,
+                "status": task.status,
+                "total": total_count,
+                "checked": checked_count,
+                "percent": round(checked_count / total_count * 100) if total_count else 0,
+                "ok": int(result.get("ok") or 0),
+                "invalid": int(result.get("invalid") or 0),
+                "errors": int(result.get("errors") or 0),
+                "created_at": task.created_at,
+                "error_message": task.error_message,
+            }
+        )
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/links.html",
@@ -1011,6 +1036,8 @@ def links_list(
                 "error_threshold": settings.link_check_error_threshold,
                 "due_count": due_link_count(db),
             },
+            link_tasks=task_rows,
+            has_active_link_tasks=any(item["status"] in {"pending", "running"} for item in task_rows),
             active="links",
         ),
     )
